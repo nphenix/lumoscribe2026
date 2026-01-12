@@ -1,107 +1,159 @@
-# Git Manager Skill
+---
+name: "git-manager"
+description: "AI驱动的Git管理技能。自动生成规范的提交信息、管理分支、解决冲突和提供Git工作流建议。在需要执行Git操作、分析变更历史或优化版本控制流程时使用。"
+---
 
-## 技能概述
+# Git管理器技能
 
-**技能名称：** git-manager  
-**版本：** 1.0.0  
-**描述：** AI驱动的Git管理技能，自动生成规范的提交信息、管理分支、解决冲突  
-**依赖：** MiniMax API (OpenAI兼容模式)
+## 用途
 
-## 功能特性
+本技能提供AI驱动的Git版本控制管理能力，包括：
+- 自动生成符合Conventional Commits规范的提交信息
+- 分支创建、切换、合并和删除管理
+- 代码变更分析和差异对比
+- 合并冲突辅助识别和解决
+- Git工作流最佳实践建议
 
-### 核心能力
+## 使用时机
 
-- **智能提交信息生成**：基于代码变更自动生成Conventional Commits格式的提交信息
-- **分支管理**：创建、切换、删除、合并分支
-- **变更分析**：分析未提交变更、对比分支差异
-- **冲突解决**：辅助识别和解决合并冲突
-- **最佳实践建议**：提供Git工作流优化建议
+在以下情况下调用此技能：
+- 需要为代码变更生成规范的提交信息
+- 需要创建、切换或合并Git分支
+- 需要分析变更历史和差异
+- 需要解决合并冲突
+- 需要优化Git工作流程
 
-### 技术特性
+## 不使用时机
 
-- 支持MiniMax API (OpenAI兼容模式)
-- 敏感数据自动过滤
-- 本地处理优先
-- 操作安全确认机制
+- 只需要基础的git status查询（直接使用对话）
+- 仓库不包含代码或不需要版本控制
+- 已熟悉Git操作不需要AI辅助
 
-## 使用方法
+## 输入要求
 
-### 前置条件
+### 最小输入
 
-```bash
-# 安装依赖
-npm install git-rewrite-commits openai
+- 执行的操作类型（如：生成提交信息、创建分支）
+- 相关文件路径或变更描述
+
+### 理想输入
+
+- 完整的git diff输出
+- 当前分支名称和目标分支名称
+- 变更的业务背景和意图
+- 相关的Issue或PR编号
+
+## 工具权限
+
+此技能需要以下工具权限：
+- **Bash** - 执行Git命令
+- **Read** - 读取文件内容
+- **write_to_file** - 创建或修改文件
+
+## 工作流程
+
+### 第一步：理解需求
+
+1. 识别用户意图（生成提交信息、管理分支、分析变更）
+2. 获取必要的上下文信息
+3. 确定执行的Git操作类型
+
+### 第二步：验证环境
+
+1. 检查当前Git仓库状态
+2. 确认分支和远程仓库配置
+3. 验证必要的权限和访问
+
+### 第三步：执行操作
+
+**生成提交信息：**
+1. 获取暂存的代码变更
+2. 过滤敏感信息（如API密钥）
+3. 调用MiniMax API生成提交信息
+4. 返回规范格式的提交建议
+
+**分支管理：**
+1. 分析当前分支状态
+2. 创建或切换到目标分支
+3. 执行合并或删除操作
+4. 处理可能的冲突
+
+**变更分析：**
+1. 比较分支或提交差异
+2. 识别变更的代码区域
+3. 提供变更摘要和建议
+
+### 第四步：结果验证
+
+1. 验证Git操作结果
+2. 确认提交信息格式正确
+3. 检查分支状态一致性
+4. 提供操作总结和建议
+
+## 示例
+
+### 示例1：生成提交信息
+
+```
+用户：帮我为这些变更生成提交信息
+
+AI：
+1. 执行 git diff --cached 查看暂存变更
+2. 调用AI生成提交信息：
+   - 类型：feat
+   - 作用域：git-manager
+   - 描述：添加MiniMax API集成支持
+3. 返回建议的提交信息：
+   feat(git-manager): 添加MiniMax API集成支持
 ```
 
-### 配置环境变量
-
-```bash
-# MiniMax API配置
-export MINIMAX_API_KEY="your-api-key"
-export MINIMAX_API_BASE="https://api.minimax.io/v1"
-
-# 可选：配置默认模型
-export GIT_AI_MODEL="MiniMax-M2.1"
-```
-
-### 集成到Git Hooks
-
-```bash
-# 安装Git hooks
-npx git-rewrite-commits install-hooks
-
-# 配置使用MiniMax API
-git config hooks.commitProvider openai
-git config hooks.apiKey ${MINIMAX_API_KEY}
-```
-
-## 配置文件
-
-### .git-commit-ai.config.json
-
-```json
-{
-  "provider": "openai",
-  "apiBase": "https://api.minimax.io/v1",
-  "model": "MiniMax-M2.1",
-  "template": "type(scope): description",
-  "language": "zh-CN",
-  "safety": {
-    "filterSensitive": true,
-    "requireConfirmation": true,
-    "autoBackup": true
-  },
-  "types": ["feat", "fix", "docs", "style", "refactor", "test", "chore"],
-  "scopes": ["skill-generator", "plan-creator", "task-breakdown", "change-manager", "debug-diagnostic", "templates"]
-}
-```
-
-## 贡献指南
-
-### 提交信息格式
-
-请遵循Conventional Commits规范：
+### 示例2：创建功能分支
 
 ```
-<type>(<scope>): <subject>
+用户：从develop创建新的功能分支
 
-[optional body]
-
-[optional footer]
+AI：
+1. 确认当前在develop分支
+2. 执行 git checkout -b feature/new-feature
+3. 验证分支创建成功
+4. 返回分支信息和建议
 ```
 
-### 示例
+### 示例3：分析变更差异
 
 ```
-feat(git-manager): add MiniMax API integration
+用户：比较main和develop分支的差异
 
-- 支持MiniMax OpenAI兼容模式
-- 自动生成规范的提交信息
-- 敏感数据过滤
-
-Closes #123
+AI：
+1. 执行 git diff main..develop
+2. 分析主要变更区域
+3. 提供变更摘要：
+   - 新增文件数
+   - 修改文件数
+   - 主要变更类型分布
 ```
 
-## 版本历史
+## 最佳实践
 
-- **1.0.0** (2026-01-12): 初始版本，支持提交信息生成和基础Git操作
+- **提交信息**：使用Conventional Commits格式，描述清晰简洁
+- **分支策略**：遵循Git Flow，保持主分支稳定
+- **提交频率**：小而频繁的提交，每个提交一个逻辑单元
+- **代码审查**：通过Pull Request进行代码审查
+- **变更分析**：在执行操作前先分析变更影响
+
+## 注意事项
+
+1. **敏感信息**：自动过滤API密钥、密码等敏感数据
+2. **操作确认**：危险操作（如force push、删除分支）需要用户确认
+3. **错误处理**：提供清晰的错误信息和恢复建议
+4. **回滚支持**：保留操作历史，支持回滚到之前状态
+
+## 相关模板
+
+- `speckit/skills/git-manager/references/template-commit.md` - 提交信息模板
+- `speckit/templates/change-template.md` - 变更记录模板
+- `git-strategy.md` - Git分支策略文档
+
+## 版本
+
+1.0.0 | 2026-01-12 | 初始版本，支持提交信息生成和基础Git操作
