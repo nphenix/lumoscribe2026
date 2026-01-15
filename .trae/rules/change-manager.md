@@ -1,3 +1,6 @@
+﻿---
+description: change, modify, update, version, history, change log
+---
 ---
 name: change-manager
 description: "change, modify, update, version, history, change log"
@@ -116,3 +119,4 @@ speckit/specs/changes/[kebab-case-变更-id]/change.md
 |------|------|---------|
 | 1.0.0 | 2026-01-12 | 初始版本 |
 | 1.1.0 | 2026-01-12 | 添加统一的 allowed-tools 格式 |
+

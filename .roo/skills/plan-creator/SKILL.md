@@ -82,7 +82,7 @@ speckit/specs/features/[kebab-case-功能名称]/plan.md
 
 ### 第五步：生成文档
 
-1. 应用 Project-template.md 结构
+1. 应用 plan-template.md 结构
 2. 全程使用中文
 3. 添加时间戳和元数据
 4. 保存到正确路径

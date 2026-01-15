@@ -1,3 +1,6 @@
+﻿---
+description: plan, architecture, design, milestone, roadmap, project planning
+---
 ---
 name: plan-creator
 description: "plan, architecture, design, milestone, roadmap, project planning"
@@ -104,7 +107,7 @@ speckit/specs/features/[kebab-case-功能名称]/plan.md
 
 ## 相关模板
 
-- `speckit/templates/plan-template.md` - 此技能生成的模板
+- `speckit/templates/Project-template.md` - 此技能生成的模板
 - `speckit/templates/spec-template.md` - 输入规格
 - `speckit/constitution.md` - 需要遵循的质量标准
 - `task-breakdown` - 工作流中的下一个技能
@@ -116,3 +119,4 @@ speckit/specs/features/[kebab-case-功能名称]/plan.md
 |------|------|---------|
 | 1.0.0 | 2026-01-12 | 初始版本 |
 | 1.1.0 | 2026-01-12 | 添加统一的 allowed-tools 格式 |
+

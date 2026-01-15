@@ -1,5 +1,5 @@
 ---
-template: Project
+template: Plan
 version: 1.0.0
 lastUpdated: 2026-01-11
 charter: ../constitution.md

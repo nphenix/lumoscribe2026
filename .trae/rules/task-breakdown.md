@@ -1,3 +1,6 @@
+﻿---
+description: task, breakdown, subtask, estimation, sprint, work breakdown
+---
 ---
 name: task-breakdown
 description: "task, breakdown, subtask, estimation, sprint, work breakdown"
@@ -113,3 +116,4 @@ speckit/specs/features/[kebab-case-功能名称]/tasks.md
 |------|------|---------|
 | 1.0.0 | 2026-01-12 | 初始版本 |
 | 1.1.0 | 2026-01-12 | 添加统一的 allowed-tools 格式 |
+

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     同步 speckit/ 目录到 .cursor/ 和 .roo/
 
@@ -67,6 +67,18 @@ param(
 # 路径配置（相对于项目根目录）
 $ProjectRoot = (Get-Item $PSScriptRoot).Parent.FullName
 $SourceBase = Join-Path $ProjectRoot "speckit"
+
+# 设置控制台编码为 UTF-8，确保中文正常显示
+try {
+    # 尝试设置控制台代码页为 65001 (UTF-8)
+    if ([System.Console]::OutputEncoding.CodePage -ne 65001) {
+        [System.Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    }
+    # 设置 PowerShell 输出管道编码
+    $OutputEncoding = [System.Text.Encoding]::UTF8
+} catch {
+    Write-Warning "无法设置 UTF-8 编码，中文显示可能异常: $_"
+}
 
 # 定义要同步的源目录
 $SourceDirs = @{
@@ -182,8 +194,7 @@ foreach ($contentType in $SelectedContent) {
                         $Description = $matches[1]
                     }
 
-                    # 构建 Header (仅 Cursor 需要复杂 header，Trae 使用简单 frontmatter 或无)
-                    # Trae 目前推荐简单的 Markdown，但保留 description 元数据可能有帮助
+                    # 构建 Header
                     $Header = ""
                     if ($TargetName -eq "Cursor") {
                         $Header = @"
@@ -195,9 +206,7 @@ alwaysApply: false
 
 "@
                     } else {
-                        # Trae 格式: 简单 Markdown，可能不需要特定 frontmatter，但保留以防万一
-                        # 根据搜索结果，Trae Rules 是 Markdown 文件
-                        # 我们可以添加一个简单的 header
+                        # Trae 格式
                          $Header = @"
 ---
 description: $Description
@@ -266,7 +275,7 @@ alwaysApply: true
                 
                 if (-not $WhatIf) {
                     if (-not (Test-Path $RuleDir)) { New-Item -ItemType Directory -Path $RuleDir -Force | Out-Null }
-                    Set-Content -Path $TargetRuleFile -Value $NewContent -Encoding UTF8
+                    [System.IO.File]::WriteAllText($TargetRuleFile, $NewContent)
                 }
             }
             elseif ($TargetName -eq "Trae IDE") {
@@ -284,7 +293,7 @@ description: 项目宪章 - 核心规则（AI助手必须遵循）
                 
                 if (-not $WhatIf) {
                     if (-not (Test-Path $RuleDir)) { New-Item -ItemType Directory -Path $RuleDir -Force | Out-Null }
-                    Set-Content -Path $TargetRuleFile -Value $NewContent -Encoding UTF8
+                    [System.IO.File]::WriteAllText($TargetRuleFile, $NewContent)
                 }
             }
             elseif ($TargetName -eq "Roo Code") {
@@ -294,6 +303,61 @@ description: 项目宪章 - 核心规则（AI助手必须遵循）
                 if (-not $WhatIf) {
                     if (-not (Test-Path $RuleDir)) { New-Item -ItemType Directory -Path $RuleDir -Force | Out-Null }
                     Copy-Item -Path $SourceConstitution -Destination $TargetRuleFile -Force
+                }
+            }
+        }
+
+        # 同步 Directory Structure
+        $SourceDirStruct = Join-Path $SourceBase "directory-structure.md"
+        if (Test-Path $SourceDirStruct) {
+            Write-Host "  同步 Directory Structure..." -ForegroundColor Cyan
+            $DirStructContent = Get-Content $SourceDirStruct -Raw -Encoding UTF8
+            
+            if ($TargetName -eq "Cursor") {
+                $TargetRuleFile = Join-Path $TargetPath "rules/directory-structure.mdc"
+                $RuleDir = Join-Path $TargetPath "rules"
+                
+                # Cursor MDC Header
+                $MDCHeader = @"
+---
+description: 目录结构与文件命名规范
+globs: 
+alwaysApply: true
+---
+
+"@
+                $NewContent = $MDCHeader + $DirStructContent
+                
+                if (-not $WhatIf) {
+                    if (-not (Test-Path $RuleDir)) { New-Item -ItemType Directory -Path $RuleDir -Force | Out-Null }
+                    [System.IO.File]::WriteAllText($TargetRuleFile, $NewContent)
+                }
+            }
+            elseif ($TargetName -eq "Trae IDE") {
+                $TargetRuleFile = Join-Path $TargetPath "rules/directory-structure.md"
+                $RuleDir = Join-Path $TargetPath "rules"
+                
+                # Trae Header
+                $Header = @"
+---
+description: 目录结构与文件命名规范
+---
+
+"@
+                $NewContent = $Header + $DirStructContent
+                
+                if (-not $WhatIf) {
+                    if (-not (Test-Path $RuleDir)) { New-Item -ItemType Directory -Path $RuleDir -Force | Out-Null }
+                    Set-Content -Path $TargetRuleFile -Value $NewContent -Encoding UTF8
+                }
+            }
+            elseif ($TargetName -eq "Roo Code") {
+                $TargetRuleFile = Join-Path $TargetPath "rules/directory-structure.md"
+                $RuleDir = Join-Path $TargetPath "rules"
+                
+                if (-not $WhatIf) {
+                    if (-not (Test-Path $RuleDir)) { New-Item -ItemType Directory -Path $RuleDir -Force | Out-Null }
+                    Copy-Item -Path $SourceDirStruct -Destination $TargetRuleFile -Force
                 }
             }
         }
@@ -373,3 +437,4 @@ Write-Host "  1. 检查变更: git diff .cursor .roo .trae" -ForegroundColor Gra
 Write-Host "  2. 提交变更: git add .cursor .roo .trae ; git commit -m 'chore: sync'" -ForegroundColor Gray
 
 exit 0
+

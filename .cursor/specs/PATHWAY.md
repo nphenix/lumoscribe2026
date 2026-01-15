@@ -27,7 +27,7 @@ speckit/
 │   └── PATHWAY.md          # 本文档
 ├── templates/              # 模板文件
 │   ├── spec-template.md    # 规格模板（含 ## API 章节要求）
-│   ├── Project-template.md # 计划模板
+│   ├── plan-template.md    # 计划模板
 │   ├── tasks-template.md   # 任务模板
 │   ├── change-template.md  # 变更模板
 │   └── debug-template.md   # 调试模板

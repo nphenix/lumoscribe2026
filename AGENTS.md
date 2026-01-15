@@ -11,6 +11,8 @@
 - `speckit/skills/` - 技能定义库（SKILL.md 模板）
 - `speckit/templates/` - 项目模板库
 - `speckit/specs/` - 技术规范和设计文档
+- `speckit/constitution.md` - 项目核心宪章
+- `speckit/directory-structure.md` - 目录结构规范
 
 ### 同步产物目录（自动生成，禁止手改）
 

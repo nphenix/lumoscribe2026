@@ -1,3 +1,6 @@
+﻿---
+description: debug, error, bug, issue, problem, diagnostic, trace, troubleshooting
+---
 ---
 name: debug-diagnostic
 description: "debug, error, bug, issue, problem, diagnostic, trace, troubleshooting"
@@ -119,3 +122,4 @@ speckit/specs/debug/[kebab-case-问题-id]/debug.md
 |------|------|---------|
 | 1.0.0 | 2026-01-12 | 初始版本 |
 | 1.1.0 | 2026-01-12 | 添加统一的 allowed-tools 格式 |
+

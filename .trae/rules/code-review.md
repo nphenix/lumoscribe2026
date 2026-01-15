@@ -1,3 +1,6 @@
+﻿---
+description: review, code quality, best practices, static analysis, lint, refactor
+---
 ---
 name: code-review
 description: "review, code quality, best practices, static analysis, lint, refactor"
@@ -234,3 +237,4 @@ wc -l $(find . -type f -name "*.py")
 |------|------|---------|
 | 1.0.0 | 2026-01-12 | 初始版本，支持代码质量审查 |
 | 1.1.0 | 2026-01-12 | 重构为纯Claude Agent Skill格式，使用通用工具描述 |
+

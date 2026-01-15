@@ -1,0 +1,137 @@
+---
+description: 目录结构与文件命名规范
+globs: 
+alwaysApply: true
+---
+# 项目目录结构规范
+
+> 本文档定义项目的目录结构和文件命名规范。
+
+## 版本信息
+
+| 版本 | 日期 | 变更内容 |
+|------|------|---------|
+| 1.0.0 | 2026-01-15 | 初始版本，定义顶层目录结构 |
+| 1.1.0 | 2026-01-15 | 添加 docs/ 目录和文件说明管理 |
+
+## 顶层目录
+
+| 目录 | 用途 | 命名规范 | 同步范围 |
+|------|------|----------|----------|
+| `docs/` | 过程文档和指南 | 中文 kebab-case | 否（本地） |
+| `speckit/` | AI 技能配置源目录 | 英文 | 是（跨工具） |
+| `src/` | 源代码目录 | 英文 kebab-case | 否（本地） |
+| `.cursor/` | Cursor 配置 | 自动生成 | 是 |
+| `.roo/` | Roo Code 配置 | 自动生成 | 是 |
+| `.trae/` | Trae IDE 配置 | 自动生成 | 是 |
+| `scripts/` | 脚本工具 | 英文 kebab-case | 否（本地） |
+
+## docs/ 目录结构
+
+### 子目录
+
+| 子目录 | 用途 | 命名规范 |
+|--------|------|----------|
+| `docs/process/` | 过程文档（会议纪要、用户故事、决策记录） | 中文 kebab-case |
+| `docs/guides/` | 指南文档（开发指南、贡献指南） | 中文 kebab-case |
+| `docs/reference/` | 参考资料（API 文档、技术规范） | 中文 kebab-case |
+
+### 文件说明管理
+
+每个目录应包含 `00-目录说明.md` 文件，记录目录内所有文件的用途。
+
+#### 文件说明模板
+
+```markdown
+# [目录名] 文件说明
+
+> 本文件记录目录中所有文件的用途，自动同步更新。
+
+## 文件列表
+
+| 文件 | 用途 | 更新日期 |
+|------|------|----------|
+| [文件名] | [用途说明] | [YYYY-MM-DD] |
+
+## 更新日志
+
+| 日期 | 操作 | 文件 | 说明 |
+|------|------|------|------|
+| [日期] | 新增/修改/删除 | [文件名] | [变更说明] |
+```
+
+#### 文件说明管理规则
+
+1. **创建文件时**
+   - 编写文件用途说明
+   - 更新对应目录的 `00-目录说明.md`
+   - 添加时间戳（YYYY-MM-DD 格式）
+
+2. **更新文件时**
+   - 修改用途说明（如有必要）
+   - 更新时间戳
+
+3. **删除文件时**
+   - 从 `00-目录说明.md` 中移除记录
+   - 添加删除日志
+
+## speckit/ 目录结构
+
+### 子目录
+
+| 子目录 | 用途 | 同步目标 |
+|--------|------|----------|
+| `speckit/skills/` | AI Agent Skills 定义 | `.cursor/skills/`, `.roo/skills/` |
+| `speckit/templates/` | 文档模板库 | `.cursor/templates/`, `.roo/templates/` |
+| `speckit/specs/` | 技术规格文档 | `.cursor/specs/`, `.roo/specs/` |
+
+### 技能文件命名
+
+技能目录使用英文 kebab-case 格式：
+
+```
+speckit/skills/
+├── git-manager/
+│   └── SKILL.md
+├── code-review/
+│   └── SKILL.md
+├── plan-creator/
+│   └── SKILL.md
+└── task-breakdown/
+    └── SKILL.md
+```
+
+## 命名规范速查
+
+### 中文文件命名
+
+- 格式：kebab-case 或 sentence-case
+- 示例：`用户登录流程.md`、`会议纪要-2026-01-15.md`
+- 避免：英文文件名、混合语言
+
+### 英文文件命名
+
+- 格式：kebab-case（小写连字符）
+- 示例：`user-login.ts`、`api-client.py`
+- 避免：CamelCase、PascalCase、snake_case（大写）
+
+### 特殊文件
+
+| 文件名 | 用途 |
+|--------|------|
+| `00-目录说明.md` | 目录文件说明索引 |
+| `README.md` | 目录说明和快速开始 |
+| `SKILL.md` | Agent Skill 定义 |
+
+## 与项目宪章的关系
+
+本文档是 [`speckit/constitution.md`](constitution.md) 的扩展文档：
+
+- **constitution.md**：核心原则和规则（P1-P9）
+- **directory-structure.md**：目录结构和文件规范（本文档）
+
+修改本文档后，需运行同步脚本：
+
+```powershell
+pwsh scripts/sync-skills.ps1
+```
