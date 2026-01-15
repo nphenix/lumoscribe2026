@@ -4,7 +4,7 @@
 
 ```markdown
 ---
-template: Plan
+template: Project
 version: 1.0.0
 lastUpdated: YYYY-MM-DD
 charter: ../constitution.md

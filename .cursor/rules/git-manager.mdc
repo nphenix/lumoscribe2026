@@ -1,3 +1,8 @@
+﻿---
+description: git, commit, branch, merge, pull, push, version control, repository
+globs: 
+alwaysApply: false
+---
 ---
 name: git-manager
 description: "git, commit, branch, merge, pull, push, version control, repository"
@@ -282,3 +287,4 @@ Closes #123
 | 1.0.0 | 2026-01-12 | 初始版本，支持提交信息生成和基础Git操作 |
 | 1.1.0 | 2026-01-12 | 重构为纯Claude Agent Skill格式，使用通用工具描述 |
 | 1.2.0 | 2026-01-12 | 添加自动同步 skills 到 Cursor 能力 |
+

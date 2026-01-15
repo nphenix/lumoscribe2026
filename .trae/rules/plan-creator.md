@@ -104,7 +104,7 @@ speckit/specs/features/[kebab-case-功能名称]/plan.md
 
 ## 相关模板
 
-- `speckit/templates/Project-template.md` - 此技能生成的模板
+- `speckit/templates/plan-template.md` - 此技能生成的模板
 - `speckit/templates/spec-template.md` - 输入规格
 - `speckit/constitution.md` - 需要遵循的质量标准
 - `task-breakdown` - 工作流中的下一个技能

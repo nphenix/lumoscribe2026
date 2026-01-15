@@ -6,7 +6,7 @@
 |------|------|------|----------|
 | 章程 | `constitution.md` | 核心原则与规则 | speckit/ |
 | 规格 | `spec-template.md` | 功能需求说明 | `speckit/specs/features/[name]/spec.md` |
-| 计划 | `plan-template.md` | 技术实施方案 | `speckit/specs/features/[name]/plan.md` |
+| 计划 | `Project-template.md` | 技术实施方案 | `speckit/specs/features/[name]/plan.md` |
 | 任务 | `tasks-template.md` | 任务分解与排期 | `speckit/specs/features/[name]/tasks.md` |
 | 变更 | `change-template.md` | 变更提案管理 | `speckit/specs/changes/[id]/change.md` |
 | 调试 | `debug-template.md` | 问题诊断与修复 | `speckit/specs/debug/[id]/debug.md` |
@@ -22,7 +22,7 @@
 - `tasks-template.md`（最小任务列表）
 
 **建议**:
-- 跳过 `plan-template.md` 详细技术上下文
+- 跳过 `Project-template.md` 详细技术上下文
 - 不创建 `data-model.md`、`quickstart.md`
 - 任务数量控制在 5 个以内
 
@@ -31,7 +31,7 @@
 **特征**: 需求明确、长期维护、多迭代
 
 **推荐模板**:
-- `spec-template.md` → `plan-template.md` → `tasks-template.md`
+- `spec-template.md` → `Project-template.md` → `tasks-template.md`
 - 完整流程
 
 **建议**:
@@ -48,7 +48,7 @@
 - `change-template.md`（如行为变更）
 
 **建议**:
-- 跳过 `spec-template.md`、`plan-template.md`
+- 跳过 `spec-template.md`、`Project-template.md`
 - 详细记录复现步骤与根因分析
 - 验证修复不影响其他功能
 
@@ -57,7 +57,7 @@
 **特征**: 架构调整、API 变更、涉及多个模块
 
 **推荐模板**:
-- `plan-template.md`（迁移计划）
+- `Project-template.md`（迁移计划）
 - `change-template.md`（API 变更）
 - `debug-template.md`（兼容性测试）
 
@@ -81,7 +81,7 @@
 | 模板 | 必填章节 |
 |------|----------|
 | spec-template.md | 用户场景与测试、需求 |
-| plan-template.md | 摘要、技术上下文、项目结构 |
+| Project-template.md | 摘要、技术上下文、项目结构 |
 | tasks-template.md | 阶段 1/2、至少一个用户故事 |
 | change-template.md | 变更原因、Delta 操作、影响范围 |
 

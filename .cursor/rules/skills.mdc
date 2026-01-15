@@ -1,0 +1,120 @@
+---
+description: Agent Skills 详细说明（按需加载）
+alwaysApply: false
+---
+
+# Agent Skills 详细说明
+
+本文件提供 7 个技能的完整描述，当需要特定技能时自动激活。
+
+## 1. git-manager
+
+**描述**: AI 驱动的 Git 管理技能。自动生成规范的提交信息、管理分支、解决冲突和提供 Git 工作流建议。
+
+**位置**: `speckit/skills/git-manager/SKILL.md`
+
+**触发词**: git, commit, branch, merge, pull, push, version control, stash, rebase
+
+**功能**:
+- 智能生成符合 Conventional Commits 规范的提交信息
+- 分支策略建议与生命周期管理
+- 合并冲突分析与解决指导
+- Git 工作流最佳实践建议
+
+## 2. code-review
+
+**描述**: 自动代码审查技能。分析代码质量、识别潜在问题、提供改进建议。
+
+**位置**: `speckit/skills/code-review/SKILL.md`
+
+**触发词**: review, code quality, best practices, static analysis, lint, security
+
+**功能**:
+- 代码质量评估与评分
+- 潜在 bug 和安全漏洞识别
+- 性能优化建议
+- 代码风格一致性检查
+
+## 3. plan-creator
+
+**描述**: 项目规划技能。创建详细的实现计划、里程碑和技术规范。
+
+**位置**: `speckit/skills/plan-creator/SKILL.md`
+
+**触发词**: plan, architecture, design, milestone, roadmap, timeline
+
+**功能**:
+- 系统架构设计与文档化
+- 项目里程碑规划
+- 技术选型建议
+- 依赖关系分析
+
+## 4. task-breakdown
+
+**描述**: 任务分解技能。将复杂功能分解为可执行的小任务，并估算工作量。
+
+**位置**: `speckit/skills/task-breakdown/SKILL.md`
+
+**触发词**: task, breakdown, subtask, estimation, sprint, backlog, story point
+
+**功能**:
+- 功能拆解为可执行任务
+- 工作量估算（故事点/工时）
+- 任务依赖关系梳理
+- Sprint 规划支持
+
+## 5. spec-generator
+
+**描述**: 技术规范生成技能。根据需求生成详细的软件设计规范和 API 文档。
+
+**位置**: `speckit/skills/spec-generator/SKILL.md`
+
+**触发词**: spec, API, documentation, interface, design document, swagger
+
+**功能**:
+- API 设计文档生成
+- 数据模型定义
+- 接口契约编写
+- 使用示例和教程
+
+## 6. change-manager
+
+**描述**: 变更管理技能。跟踪、管理和记录项目变更，确保变更可追溯。
+
+**位置**: `speckit/skills/change-manager/SKILL.md`
+
+**触发词**: change, modify, update, version, changelog, release
+
+**功能**:
+- 变更日志自动生成
+- 版本号管理建议
+- 变更影响分析
+- 发布计划制定
+
+## 7. debug-diagnostic
+
+**描述**: 调试诊断技能。分析错误日志、定位问题根因、提供修复方案。
+
+**位置**: `speckit/skills/debug-diagnostic/SKILL.md`
+
+**触发词**: debug, error, bug, issue, problem, diagnostic, trace, stack trace
+
+**功能**:
+- 错误日志分析
+- 根因定位
+- 修复方案建议
+- 预防措施推荐
+
+## 使用流程
+
+```
+需求 → spec-generator → plan-creator → task-breakdown
+                           ↓
+                    change-manager → code-review
+                           ↓
+                      git-manager (commit)
+                           ↓
+                    debug-diagnostic (如需要)
+```
+
+> **参考**: 完整技能使用指南见 [AGENTS.md](../AGENTS.md)

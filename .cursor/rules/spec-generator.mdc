@@ -1,3 +1,8 @@
+﻿---
+description: spec, API, documentation, interface, design document, specification
+globs: 
+alwaysApply: false
+---
 ---
 name: spec-generator
 description: "spec, API, documentation, interface, design document, specification"
@@ -113,3 +118,4 @@ speckit/specs/features/[kebab-case-功能名称]/spec.md
 |------|------|---------|
 | 1.0.0 | 2026-01-12 | 初始版本 |
 | 1.1.0 | 2026-01-12 | 添加统一的 allowed-tools 格式 |
+

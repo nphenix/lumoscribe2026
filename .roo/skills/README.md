@@ -12,7 +12,6 @@
 |------|------|----------|----------|----------|
 | **Roo Code** | ✅ 已集成 | `.roo/` | 引用 `AGENTS.md` | `/` |
 | **Cursor** | ✅ 已集成 | `.cursor/` | 内联集成 | `/` |
-| **Trae IDE** | ✅ 已集成 | `.trae/` | 复制 `SKILL.md` 到 `rules/` | 自然语言 |
 | **Claude Code** | ⚪ 待集成 | `.claude/` | 待配置 | 待配置 |
 
 ## 技能架构
@@ -120,7 +119,7 @@ speckit/
 | Git操作和提交信息 | git-manager | template-commit.md |
 | 代码质量审查 | code-review | - |
 | 定义要构建什么 | spec-generator | spec-template.md |
-| 规划如何构建 | plan-creator | plan-template.md |
+| 规划如何构建 | plan-creator | Project-template.md |
 | 分解为任务 | task-breakdown | tasks-template.md |
 | 跟踪范围变更 | change-manager | change-template.md |
 | 记录 bug 修复 | debug-diagnostic | debug-template.md |
@@ -134,7 +133,7 @@ speckit/
 | git-manager | template-commit.md | change-template.md |
 | code-review | template-review.md | constitution.md |
 | spec-generator | spec-template.md | constitution.md |
-| plan-creator | plan-template.md | spec-template.md, constitution.md |
+| plan-creator | Project-template.md | spec-template.md, constitution.md |
 | task-breakdown | tasks-template.md | plan-template.md, spec-template.md |
 | change-manager | change-template.md | spec-template.md, constitution.md |
 | debug-diagnostic | debug-template.md | change-template.md, constitution.md |
@@ -220,7 +219,6 @@ speckit/specs/
 - `AGENTS.md` - **跨工具 Agent Skills 配置**（源配置）
 - `.roo/rules/02-agents.md` - Roo Code 引用配置
 - `.cursor/rules/constitution.mdc` - Cursor 内联配置
-- `.trae/rules/` - Trae IDE 规则目录
 - `CLAUDE.md` - 项目的 Claude Code 说明
 
 ## 许可证

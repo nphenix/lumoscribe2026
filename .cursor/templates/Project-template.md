@@ -7,7 +7,7 @@ charter: ../constitution.md
 
 # 实施计划：[功能名称]
 
-**分支**: `feature/[issue-id]-[name]` | **日期**: [YYYY-MM-DD] | **规格**: [spec.md链接](../specs/features/spec.md)
+**分支**: `feature/[issue-id]-[name]` | **日期**: [YYYY-MM-DD] | **规格**: [spec.md链接](./spec.md)
 
 **输入**: 功能规格说明
 
@@ -35,13 +35,9 @@ charter: ../constitution.md
 
 ```
 speckit/specs/features/[name]/
-├── spec.md              # 本文件 
-├── plan.md              # 本文件 
-├── research.md          # 第 0 阶段输出 
-├── data-model.md        # 第 1 阶段输出 
-├── quickstart.md        # 第 1 阶段输出 
-├── contracts/           # 第 1 阶段输出 
-└── tasks.md             # 第 2 阶段输出 
+├── spec.md              # 功能规格（唯一入口，包含 API 章节）
+├── plan.md              # 本文件（架构/策略/决策，无任务）
+└── tasks.md             # 任务清单 + 验收标准
 ```
 
 ### 源代码（仓库根目录）
