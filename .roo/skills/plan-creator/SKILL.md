@@ -1,6 +1,6 @@
 ---
 name: plan-creator
-description: "plan, architecture, design, milestone, roadmap, project planning"
+description: "plan, architecture, design, milestone, roadmap, project planning, 功能设计, 技术方案, 项目规划, 实施方案"
 allowed-tools:
   - read_file
   - write_file
