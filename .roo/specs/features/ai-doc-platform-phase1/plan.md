@@ -22,14 +22,14 @@ links:
 
 ## 技术上下文
 
-- **语言/版本**: Python 3.12
-- **主要依赖**: FastAPI、Celery、Redis、SQLAlchemy、httpx
+- **语言/版本**: Python 3.12, TypeScript (Next.js 14+)
+- **主要依赖**: FastAPI、Celery、Redis、SQLAlchemy、httpx, React, Shadcn UI, Tailwind CSS
 - **Agent/LLM**: LangChain 1.0（统一模型封装与动态选择）
 - **RAG**: LlamaIndex（混合检索与组装）
 - **存储**: SQLite（元数据/配置/任务状态） + ChromaDB（向量库） + 本地文件系统（工件文件）
-- **测试**: pytest（默认依赖）
+- **测试**: pytest（后端）, jest/react-testing-library（前端）
 - **目标平台**: Windows 11（开发）、后续可容器化部署
-- **项目类型**: 后端（API + Worker）+ 中台（Next.js，后续里程碑）
+- **项目类型**: 后端（API + Worker）+ 中台（Next.js）
 - **约束条件**:
   - 输出必须严格遵守模板骨架（模板不可被 LLM 改写）
   - 错误响应与日志必须统一、可追踪（request_id/job_id）
@@ -48,12 +48,12 @@ links:
 
 ### LLM 封装策略（两维度）
 
-- **Provider 维度**：openai-compatible（覆盖 vLLM/GPUStack 等）、Gemini、Ollama 等。
-- **Capability 维度**：pdf_ocr/doc_clean/chart_to_json/long_doc_generate/embed/rerank 等能力映射到模型。
+- **Provider 维度**：OpenAI 兼容（覆盖 vLLM/GPUStack 等）、ChatGPT、Gemini、Ollama、FlagEmbedding 等。
+- **Capability 维度**：pdf_ocr（MinerU）、doc_clean、chart_to_json、long_doc_generate、embed、rerank 等能力映射到模型。
 
 ### 知识库检索策略
 
-- **混合检索**：BM25 + 向量召回融合（RRF/加权），可选 rerank 能力二次排序。
+- **混合检索**：BM25 + 向量召回融合（RRF/加权），可选 rerank 能力二次排序。基于 LlamaIndex 实现。
 
 ## 项目结构（本功能）
 
@@ -76,11 +76,19 @@ src/
 │   └── admin-web/
 └── shared/
 
+web/ (新增)
+├── app/
+├── components/
+├── lib/
+└── public/
+
 tests/
 ```
 
-**结构决策**：采用 `domain/application/interfaces/shared` 分层，避免业务逻辑与接口/基础设施耦合，便于后续扩展多模型、多流水线与多前端集成。
+**结构决策**：
+1. 后端采用 `domain/application/interfaces/shared` 分层，避免业务逻辑与接口/基础设施耦合。
+2. 前端采用 Next.js App Router 结构，位于 `web/` 目录，与后端代码库共存（Monorepo 风格），便于全栈开发与管理。
 
 ---
 
-**版本**: 1.0.0 | **创建**: 2026-01-16 | **最后更新**: 2026-01-16
+**版本**: 1.1.0 | **创建**: 2026-01-16 | **最后更新**: 2026-01-16

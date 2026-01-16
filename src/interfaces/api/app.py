@@ -19,6 +19,8 @@ from src.shared.request_id import get_request_id, new_request_id, set_request_id
 from src.interfaces.api.routes.health import router as health_router
 from src.interfaces.api.routes.intermediates import router as intermediates_router
 from src.interfaces.api.routes.jobs import router as jobs_router
+from src.interfaces.api.routes.llm import router as llm_router
+from src.interfaces.api.routes.prompts import router as prompts_router
 from src.interfaces.api.routes.sources import router as sources_router
 from src.interfaces.api.routes.targets import router as targets_router
 from src.interfaces.api.routes.templates import router as templates_router
@@ -96,6 +98,8 @@ def create_app() -> FastAPI:
     app.include_router(health_router, prefix="/v1")
     app.include_router(intermediates_router, prefix="/v1")
     app.include_router(jobs_router, prefix="/v1")
+    app.include_router(llm_router, prefix="/v1")
+    app.include_router(prompts_router, prefix="/v1")
     app.include_router(sources_router, prefix="/v1")
     app.include_router(targets_router, prefix="/v1")
     app.include_router(templates_router, prefix="/v1")

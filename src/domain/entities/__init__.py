@@ -4,10 +4,18 @@ from .source_file import SourceFile
 from .template import Template
 from .intermediate_artifact import IntermediateArtifact
 from .target_file import TargetFile
+from .llm_provider import LLMProvider
+from .llm_model import LLMModel
+from .llm_capability import LLMCapability
+from .prompt import Prompt
 
 __all__ = [
     "SourceFile",
     "Template",
     "IntermediateArtifact",
     "TargetFile",
+    "LLMProvider",
+    "LLMModel",
+    "LLMCapability",
+    "Prompt",
 ]

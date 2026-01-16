@@ -7,7 +7,13 @@
     python scripts/init-db.py
 """
 
+import sys
 from pathlib import Path
+
+# 允许从任意工作目录运行脚本：确保项目根目录在 sys.path 中
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.shared.config import get_settings
 from src.shared.db import Base, make_engine
@@ -18,6 +24,10 @@ from src.domain.entities import (
     Template,
     IntermediateArtifact,
     TargetFile,
+    LLMProvider,
+    LLMModel,
+    LLMCapability,
+    Prompt,
 )
 
 
@@ -35,7 +45,7 @@ def main() -> None:
     # 创建所有表
     Base.metadata.create_all(engine)
 
-    print(f"✅ 数据库初始化完成: {db_path}")
+    print(f"DB initialized: {db_path}")
     print("已创建的表:")
     for table in Base.metadata.tables.values():
         print(f"  - {table.name}")

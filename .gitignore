@@ -20,3 +20,8 @@ dist/
 Thumbs.db
 .idea/
 .vscode/
+
+# Env files
+.env
+.env.*
+!.env.example

@@ -19,6 +19,7 @@ async def api_client(tmp_path: Path):
 
     os.environ["LUMO_STORAGE_ROOT"] = str(storage_root)
     os.environ["LUMO_SQLITE_PATH"] = str(sqlite_path)
+    os.environ["LUMO_DISABLE_DOTENV"] = "1"
     reset_settings_for_tests()
 
     from src.interfaces.api.app import create_app

@@ -22,11 +22,10 @@ links:
 - [x] T001 [P0] 创建符合分层架构的项目结构（`src/`、`tests/`、各目录 `00-目录说明.md`）
 
   **相关文件**:
-  - 根目录: [`00-目录说明.md`](00-目录说明.md)
-  - 源码目录: [`src/00-目录说明.md`](src/00-目录说明.md)、[`src/domain/`](src/domain)、[`src/application/`](src/application)、[`src/interfaces/`](src/interfaces)、[`src/shared/`](src/shared)
-  - 测试目录: [`tests/00-目录说明.md`](tests/00-目录说明.md)
-  - 脚本目录: [`scripts/00-目录说明.md`](scripts/00-目录说明.md)
-  - 文档目录: [`docs/00-目录说明.md`](docs/00-目录说明.md)
+  -源码目录: [`src/domain/`](src/domain)、[`src/application/`](src/application)、[`src/interfaces/`](src/interfaces)、[`src/shared/`](src/shared)
+  - 测试目录: [`tests/`]
+  - 脚本目录: [`scripts/`]
+  - 文档目录: [`docs/`](docs/00-目录说明.md)
 - [x] T002 [P0] 初始化 Python 项目依赖（`pyproject.toml`），并提供 `env.example`
 
   **相关文件**:
@@ -83,8 +82,8 @@ links:
   - Service: [`source_file_service.py`](src/application/services/source_file_service.py)
   - Route: [`sources.py`](src/interfaces/api/routes/sources.py)
   - Schema: [`source_file.py`](src/application/schemas/source_file.py)
-  - 目录说明: [`entities/00-目录说明.md`](src/domain/entities/00-目录说明.md)、[`schemas/00-目录说明.md`](src/application/schemas/00-目录说明.md)
-- [ ] T012 [P1] [US2] 实现模板上传/CRUD/锁定/预处理校验 API（预处理不使用 LLM）
+  - 目录说明: [`entities/`](src/domain/entities/00-目录说明.md)、[`schemas/`](src/application/schemas/00-目录说明.md)
+- [x] T012 [P1] [US2] 实现模板上传/CRUD/锁定/预处理校验 API（预处理不使用 LLM）
 
   **相关文件**:
   - Entity: [`template.py`](src/domain/entities/template.py)
@@ -100,8 +99,8 @@ links:
   - Service: [`intermediate_artifact_service.py`](src/application/services/intermediate_artifact_service.py)
   - Route: [`intermediates.py`](src/interfaces/api/routes/intermediates.py)
   - Schema: [`intermediate_artifact.py`](src/application/schemas/intermediate_artifact.py)
-  - 目录说明: [`entities/00-目录说明.md`](src/domain/entities/00-目录说明.md)、[`schemas/00-目录说明.md`](src/application/schemas/00-目录说明.md)
-- [ ] T014 [P2] [US2] 实现目标文件查询/下载 API
+  - 目录说明: [`entities/`](src/domain/entities/00-目录说明.md)、[`schemas/`](src/application/schemas/00-目录说明.md)
+- [x] T014 [P2] [US2] 实现目标文件查询/下载 API
 
   **相关文件**:
   - Entity: [`target_file.py`](src/domain/entities/target_file.py)
@@ -115,11 +114,38 @@ links:
 ## 阶段3：LLM 配置与提示词管理（US2/US3）
 
 **目标**: LangChain 1.0 统一封装 + 能力映射可配置；提示词可观测与可编辑。
+**技术栈**: LangChain 1.0 (Python)
 
-- [ ] T020 [P1] 设计并实现 `llm_providers/llm_models/llm_capabilities/prompts` 数据表
-- [ ] T021 [P1] 实现 provider/model/capability CRUD API
-- [ ] T022 [P1] 实现 prompts CRUD + version/active 切换 API
-- [ ] T023 [P2] 实现运行时按 capability 选择模型并构建 LangChain runnable 的封装
+- [x] T020 [P1] 设计并实现 `llm_providers/llm_models/llm_capabilities/prompts` 数据表
+
+  **相关文件**:
+  - Entities: [`llm_provider.py`](src/domain/entities/llm_provider.py)、[`llm_model.py`](src/domain/entities/llm_model.py)、[`llm_capability.py`](src/domain/entities/llm_capability.py)、[`prompt.py`](src/domain/entities/prompt.py)
+  - 数据库初始化: [`init-db.py`](../scripts/init-db.py)、[`verify-db.py`](../scripts/verify-db.py)
+- [x] T021 [P1] 实现 LLM 基础数据 CRUD API
+
+  **相关文件**:
+  - Route: [`llm.py`](src/interfaces/api/routes/llm.py)
+  - Schemas: [`llm.py`](src/application/schemas/llm.py)
+  - Repositories: [`llm_provider_repository.py`](src/application/repositories/llm_provider_repository.py)、[`llm_model_repository.py`](src/application/repositories/llm_model_repository.py)、[`llm_capability_repository.py`](src/application/repositories/llm_capability_repository.py)
+  - Services: [`llm_provider_service.py`](src/application/services/llm_provider_service.py)、[`llm_model_service.py`](src/application/services/llm_model_service.py)、[`llm_capability_service.py`](src/application/services/llm_capability_service.py)
+  - Tests: [`test_llm_config_api.py`](tests/test_llm_config_api.py)
+  - Provider 支持: OpenAI 兼容, ChatGPT, Gemini, Ollama, vLLM, GPUStack, FlagEmbedding，llama.cpp
+  - Model 类型: 推理 (Chat/Completion), Embedding, Rerank, Multimodal, OCR
+- [x] T022 [P1] 实现 prompts CRUD + version/active 切换 API
+
+  **相关文件**:
+  - Route: [`prompts.py`](src/interfaces/api/routes/prompts.py)
+  - Schemas: [`prompt.py`](src/application/schemas/prompt.py)
+  - Repository: [`prompt_repository.py`](src/application/repositories/prompt_repository.py)
+  - Service: [`prompt_service.py`](src/application/services/prompt_service.py)
+  - Tests: [`test_llm_config_api.py`](tests/test_llm_config_api.py)
+- [x] T023 [P2] 实现 LLM 统一调用封装（LangChain 1.0）
+
+  **相关文件**:
+  - Runtime: [`llm_runtime_service.py`](src/application/services/llm_runtime_service.py)
+  - Repositories: [`llm_provider_repository.py`](src/application/repositories/llm_provider_repository.py)、[`llm_model_repository.py`](src/application/repositories/llm_model_repository.py)、[`llm_capability_repository.py`](src/application/repositories/llm_capability_repository.py)、[`prompt_repository.py`](src/application/repositories/prompt_repository.py)
+  - 维度1: 技术适配层（标准化不同 Provider 的调用）
+  - 维度2: 业务能力层（按 Capability 路由模型：MinerU, 清洗, 润色, 图转JSON, 长文生成, 向量生成）
 
 ---
 
@@ -128,11 +154,11 @@ links:
 **目标**: 图片型 PDF → OCR → 清洗 → 图表 JSON → 切块 → 知识库（SQLite+BM25+Chroma）可用。
 
 - [ ] T030 [P0] [US1] 接入 MinerU 在线服务：请求/超时/重试/落盘 `mineru_raw`
-- [ ] T031 [P1] [US1] 文档清洗：规则过滤 + 推理 LLM 清洗（产出 `cleaned_doc`）
-- [ ] T032 [P1] [US1] 图表提取与图转 JSON（多模态模型，产出 `chart_json`）
-- [ ] T033 [P1] [US1] 切块：结构→语义→句子→长度；写入 `kb_chunks`
-- [ ] T034 [P1] [US1] 向量写入 ChromaDB（FlagEmbedding）
-- [ ] T035 [P2] [US1] BM25 索引与混合检索骨架（LlamaIndex）
+- [ ] T031 [P1] [US1] 文档清洗：规则过滤 + 推理 LLM 清洗（去除广告/无意义信息，产出 `cleaned_doc`）
+- [ ] T032 [P1] [US1] 图表提取与图转 JSON（调用多模态模型，产出 `chart_json`）
+- [ ] T033 [P1] [US1] 切块：基于文档结构-语义-句子-长度的顺序切分；写入 `kb_chunks`（基于llamaIndex）
+- [ ] T034 [P1] [US1] 向量写入 ChromaDB（调用 FlagEmbedding 模型）
+- [ ] T035 [P2] [US1] 构建混合检索索引（SQLite 元数据 + BM25 + Vector，基于 LlamaIndex）
 
 ---
 
@@ -140,10 +166,23 @@ links:
 
 **目标**: 模板驱动长文生成；模板骨架不变；输出单 HTML。
 
-- [ ] T040 [P0] [US3] 模板预处理/校验：占位符与结构校验；锁定后禁止修改
-- [ ] T041 [P1] [US3] RAG 检索与上下文组装（混合检索 + 可选 rerank）
-- [ ] T042 [P1] [US3] 按模板 section 生成内容（推理 LLM），输出单 HTML 并写入 `target_files`
-- [ ] T043 [P2] [US3] 图表 JSON → 图表渲染原子能力（SVG/PNG/HTML snippet）
+- [ ] T040 [P0] [US3] 模板预处理/校验：占位符与结构校验；锁定后禁止修改（不使用 LLM）
+- [ ] T041 [P1] [US3] RAG 检索与上下文组装（基于 LlamaIndex 混合检索 + 可选 Rerank）
+- [ ] T042 [P1] [US3] 按模板 section 生成内容（推理 LLM 润色），输出单 HTML 并写入 `target_files`
+- [ ] T043 [P2] [US3] 图表 JSON → 图表渲染原子能力（基于 JSON 动态绘制 SVG/PNG/HTML snippet）
+
+---
+
+## 阶段6：中台管理前端（Next.js + Shadcn UI）
+
+**目标**: 提供可视化管理界面，涵盖文档管理、LLM 配置、提示词管理与任务观测。
+**技术栈**: Next.js 14+, Shadcn UI, Tailwind CSS
+
+- [ ] T050 [P0] 初始化前端项目（Next.js, Shadcn UI, Tailwind, Axios/TanStack Query）
+- [ ] T051 [P1] 实现文档管理页面（源文件上传/列表/归档，模板管理/锁定，目标文件下载/预览，中间态观测）
+- [ ] T052 [P1] 实现 LLM 配置页面（Provider/Model/Capability 增删改查与测试）
+- [ ] T053 [P1] 实现提示词管理页面（Prompt 列表/版本管理/编辑）
+- [ ] T054 [P2] 实现任务与知识库观测页面（Jobs 状态流转，KB 状态查看）
 
 ---
 
@@ -155,4 +194,4 @@ links:
 
 ---
 
-**版本**: 1.1.0 | **创建**: 2026-01-16 | **最后更新**: 2026-01-16
+**版本**: 1.3.0 | **创建**: 2026-01-16 | **最后更新**: 2026-01-16

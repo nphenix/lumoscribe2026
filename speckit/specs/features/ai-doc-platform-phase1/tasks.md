@@ -114,11 +114,38 @@ links:
 ## 阶段3：LLM 配置与提示词管理（US2/US3）
 
 **目标**: LangChain 1.0 统一封装 + 能力映射可配置；提示词可观测与可编辑。
+**技术栈**: LangChain 1.0 (Python)
 
-- [ ] T020 [P1] 设计并实现 `llm_providers/llm_models/llm_capabilities/prompts` 数据表
-- [ ] T021 [P1] 实现 provider/model/capability CRUD API
-- [ ] T022 [P1] 实现 prompts CRUD + version/active 切换 API
-- [ ] T023 [P2] 实现运行时按 capability 选择模型并构建 LangChain runnable 的封装
+- [x] T020 [P1] 设计并实现 `llm_providers/llm_models/llm_capabilities/prompts` 数据表
+
+  **相关文件**:
+  - Entities: [`llm_provider.py`](src/domain/entities/llm_provider.py)、[`llm_model.py`](src/domain/entities/llm_model.py)、[`llm_capability.py`](src/domain/entities/llm_capability.py)、[`prompt.py`](src/domain/entities/prompt.py)
+  - 数据库初始化: [`init-db.py`](../scripts/init-db.py)、[`verify-db.py`](../scripts/verify-db.py)
+- [x] T021 [P1] 实现 LLM 基础数据 CRUD API
+
+  **相关文件**:
+  - Route: [`llm.py`](src/interfaces/api/routes/llm.py)
+  - Schemas: [`llm.py`](src/application/schemas/llm.py)
+  - Repositories: [`llm_provider_repository.py`](src/application/repositories/llm_provider_repository.py)、[`llm_model_repository.py`](src/application/repositories/llm_model_repository.py)、[`llm_capability_repository.py`](src/application/repositories/llm_capability_repository.py)
+  - Services: [`llm_provider_service.py`](src/application/services/llm_provider_service.py)、[`llm_model_service.py`](src/application/services/llm_model_service.py)、[`llm_capability_service.py`](src/application/services/llm_capability_service.py)
+  - Tests: [`test_llm_config_api.py`](tests/test_llm_config_api.py)
+  - Provider 支持: OpenAI 兼容, ChatGPT, Gemini, Ollama, vLLM, GPUStack, FlagEmbedding，llama.cpp
+  - Model 类型: 推理 (Chat/Completion), Embedding, Rerank, Multimodal, OCR
+- [x] T022 [P1] 实现 prompts CRUD + version/active 切换 API
+
+  **相关文件**:
+  - Route: [`prompts.py`](src/interfaces/api/routes/prompts.py)
+  - Schemas: [`prompt.py`](src/application/schemas/prompt.py)
+  - Repository: [`prompt_repository.py`](src/application/repositories/prompt_repository.py)
+  - Service: [`prompt_service.py`](src/application/services/prompt_service.py)
+  - Tests: [`test_llm_config_api.py`](tests/test_llm_config_api.py)
+- [x] T023 [P2] 实现 LLM 统一调用封装（LangChain 1.0）
+
+  **相关文件**:
+  - Runtime: [`llm_runtime_service.py`](src/application/services/llm_runtime_service.py)
+  - Repositories: [`llm_provider_repository.py`](src/application/repositories/llm_provider_repository.py)、[`llm_model_repository.py`](src/application/repositories/llm_model_repository.py)、[`llm_capability_repository.py`](src/application/repositories/llm_capability_repository.py)、[`prompt_repository.py`](src/application/repositories/prompt_repository.py)
+  - 维度1: 技术适配层（标准化不同 Provider 的调用）
+  - 维度2: 业务能力层（按 Capability 路由模型：MinerU, 清洗, 润色, 图转JSON, 长文生成, 向量生成）
 
 ---
 
@@ -126,12 +153,41 @@ links:
 
 **目标**: 图片型 PDF → OCR → 清洗 → 图表 JSON → 切块 → 知识库（SQLite+BM25+Chroma）可用。
 
-- [ ] T030 [P0] [US1] 接入 MinerU 在线服务：请求/超时/重试/落盘 `mineru_raw`
-- [ ] T031 [P1] [US1] 文档清洗：规则过滤 + 推理 LLM 清洗（产出 `cleaned_doc`）
-- [ ] T032 [P1] [US1] 图表提取与图转 JSON（多模态模型，产出 `chart_json`）
-- [ ] T033 [P1] [US1] 切块：结构→语义→句子→长度；写入 `kb_chunks`
-- [ ] T034 [P1] [US1] 向量写入 ChromaDB（FlagEmbedding）
-- [ ] T035 [P2] [US1] BM25 索引与混合检索骨架（LlamaIndex）
+- [x] T030 [P0] [US1] 接入 MinerU 在线服务：请求/超时/重试/落盘 `mineru_raw`
+
+  **相关文件**:
+  - 服务: [`mineru_service.py`](src/application/services/mineru_service.py)
+  - Schema: [`mineru.py`](src/application/schemas/mineru.py)
+  - 能力: 异步客户端、重试机制、预签名上传、任务轮询、结果落盘
+- [x] T031 [P1] [US1] 文档清洗：规则过滤 + 推理 LLM 清洗（去除广告/无意义信息，产出 `cleaned_doc`）
+
+  **相关文件**:
+  - 服务: [`document_cleaning_service.py`](src/application/services/document_cleaning_service.py)
+  - Schema: [`document_cleaning.py`](src/application/schemas/document_cleaning.py)
+  - 能力: 广告过滤、噪声移除、空白标准化、重复去除、LLM 智能清洗
+- [x] T032 [P1] [US1] 图表提取与图转 JSON（调用多模态模型，产出 `chart_json`）
+
+  **相关文件**:
+  - 服务: [`document_cleaning_service.py`](src/application/services/document_cleaning_service.py)
+  - Schema: [`document_cleaning.py`](src/application/schemas/document_cleaning.py)
+  - 能力: 图表类型检测、多模态模型调用、JSON 结构化输出
+- [x] T033 [P1] [US1] 切块：基于文档结构-语义-句子-长度的顺序切分；写入 `kb_chunks`（基于llamaIndex）
+
+  **相关文件**:
+  - 服务: [`chunking_service.py`](src/application/services/chunking_service.py)
+  - Schema: [`ingest.py`](src/application/schemas/ingest.py)
+  - 策略: 结构感知切分、语义切分、句子切分、长度约束
+- [x] T034 [P1] [US1] 向量写入 ChromaDB（调用 FlagEmbedding 模型）
+
+  **相关文件**:
+  - 服务: [`vector_storage_service.py`](src/application/services/vector_storage_service.py)
+  - Schema: [`ingest.py`](src/application/schemas/ingest.py)
+  - 嵌入模型: BAAI/bge-large-zh-v1.5, HuggingFaceEmbedding
+- [x] T035 [P2] [US1] 构建混合检索索引（SQLite 元数据 + BM25 + Vector，基于 LlamaIndex）
+
+  **相关文件**:
+  - 服务: [`hybrid_search_service.py`](src/application/services/hybrid_search_service.py)
+  - 检索策略: RRF 融合、Cross-Encoder 重排序、BM25 + Vector 双路召回
 
 ---
 
@@ -139,10 +195,23 @@ links:
 
 **目标**: 模板驱动长文生成；模板骨架不变；输出单 HTML。
 
-- [ ] T040 [P0] [US3] 模板预处理/校验：占位符与结构校验；锁定后禁止修改
-- [ ] T041 [P1] [US3] RAG 检索与上下文组装（混合检索 + 可选 rerank）
-- [ ] T042 [P1] [US3] 按模板 section 生成内容（推理 LLM），输出单 HTML 并写入 `target_files`
-- [ ] T043 [P2] [US3] 图表 JSON → 图表渲染原子能力（SVG/PNG/HTML snippet）
+- [ ] T040 [P0] [US3] 模板预处理/校验：占位符与结构校验；锁定后禁止修改（不使用 LLM）
+- [ ] T041 [P1] [US3] RAG 检索与上下文组装（基于 LlamaIndex 混合检索 +  Rerank）
+- [ ] T042 [P1] [US3] 按模板 section 生成内容（推理 LLM 润色），召回的图表要使用T043能力重新渲染，输出单 HTML 并写入 `target_files`
+- [ ] T043 [P2] [US3] 图表 JSON → 图表渲染原子能力（基于 JSON 动态绘制 SVG/PNG/HTML snippet）
+
+---
+
+## 阶段6：中台管理前端（Next.js + Shadcn UI）
+
+**目标**: 提供可视化管理界面，涵盖文档管理、LLM 配置、提示词管理与任务观测。
+**技术栈**: Next.js 14+, Shadcn UI, Tailwind CSS
+
+- [ ] T050 [P0] 初始化前端项目（Next.js, Shadcn UI, Tailwind, Axios/TanStack Query）
+- [ ] T051 [P1] 实现文档管理页面（源文件上传/列表/归档，模板管理/锁定，目标文件下载/预览，中间态观测）
+- [ ] T052 [P1] 实现 LLM 配置页面（Provider/Model/Capability 增删改查与测试）
+- [ ] T053 [P1] 实现提示词管理页面（Prompt 列表/版本管理/编辑）
+- [ ] T054 [P2] 实现任务与知识库观测页面（Jobs 状态流转，KB 状态查看）
 
 ---
 
@@ -154,4 +223,4 @@ links:
 
 ---
 
-**版本**: 1.2.0 | **创建**: 2026-01-16 | **最后更新**: 2026-01-16
+**版本**: 1.4.0 | **创建**: 2026-01-16 | **最后更新**: 2026-01-16
