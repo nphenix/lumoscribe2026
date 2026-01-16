@@ -20,11 +20,47 @@ links:
 **目的**: 建立可运行骨架与最小闭环（API 创建任务 → Redis 队列 → Worker 执行 → 状态回写 → API 查询）。
 
 - [x] T001 [P0] 创建符合分层架构的项目结构（`src/`、`tests/`、各目录 `00-目录说明.md`）
+
+  **相关文件**:
+  - 根目录: [`00-目录说明.md`](00-目录说明.md)
+  - 源码目录: [`src/00-目录说明.md`](src/00-目录说明.md)、[`src/domain/`](src/domain)、[`src/application/`](src/application)、[`src/interfaces/`](src/interfaces)、[`src/shared/`](src/shared)
+  - 测试目录: [`tests/00-目录说明.md`](tests/00-目录说明.md)
+  - 脚本目录: [`scripts/00-目录说明.md`](scripts/00-目录说明.md)
+  - 文档目录: [`docs/00-目录说明.md`](docs/00-目录说明.md)
 - [x] T002 [P0] 初始化 Python 项目依赖（`pyproject.toml`），并提供 `env.example`
+
+  **相关文件**:
+  - 项目配置: [`pyproject.toml`](pyproject.toml)
+  - 环境示例: [`env.example`](.env.example)
+  - 依赖锁定: [`uv.lock`](uv.lock)
 - [x] T003 [P0] 建立 FastAPI 最小服务（`/v1/health`）与统一错误响应格式
+
+  **相关文件**:
+  - 主入口: [`main.py`](src/interfaces/api/main.py)
+  - 应用实例: [`app.py`](src/interfaces/api/app.py)
+  - 健康检查: [`health.py`](src/interfaces/api/routes/health.py)
+  - 错误处理: [`errors.py`](src/shared/errors.py)
+  - 依赖注入: [`deps.py`](src/interfaces/api/deps.py)
 - [x] T004 [P0] 建立 SQLite 元数据与 `jobs` 表（最小字段）
+
+  **相关文件**:
+  - 数据库连接: [`db.py`](src/shared/db.py)
+  - 配置管理: [`config.py`](src/shared/config.py)
+  - 路由: [`jobs.py`](src/interfaces/api/routes/jobs.py)
+  - 数据库脚本: [`init-db.py`](../scripts/init-db.py)、[`verify-db.py`](../scripts/verify-db.py)
 - [x] T005 [P0] 建立 Celery + Redis Worker（占位任务）并接入 `/v1/jobs` 创建即入队
-- [ ] T006 [P1] 规范化安装与运行命令（README：安装依赖、启动 API/Worker/Redis）
+
+  **相关文件**:
+  - Celery 应用: [`celery_app.py`](src/interfaces/worker/celery_app.py)
+  - Worker 任务: [`tasks.py`](src/interfaces/worker/tasks.py)
+  - 路由: [`jobs.py`](src/interfaces/api/routes/jobs.py)
+  - 数据库连接: [`db.py`](src/shared/db.py)
+- [x] T006 [P1] 规范化安装与运行命令（README：安装依赖、启动 API/Worker/Redis）
+
+  **相关文件**:
+  - 主文档: [`README.md`](README.md)
+  - 快速开始: [`QUICKSTART.md`](QUICKSTART.md)
+  - Agent 配置: [`AGENTS.md`](AGENTS.md)
 
 ---
 
@@ -32,11 +68,47 @@ links:
 
 **目标**: 完成 CRUD + 归档 + 中间态观测/删除，形成平台治理能力基础。
 
-- [ ] T010 [P1] [US2] 设计并实现 `source_files/templates/target_files/intermediate_artifacts` 数据表
-- [ ] T011 [P1] [US2] 实现源文件上传/查询/更新/删除/归档 API（含文件落盘）
+- [x] T010 [P1] [US2] 设计并实现 `source_files/templates/target_files/intermediate_artifacts` 数据表
+
+  **相关文件**:
+  - Entities: [`source_file.py`](src/domain/entities/source_file.py)、[`template.py`](src/domain/entities/template.py)、[`intermediate_artifact.py`](src/domain/entities/intermediate_artifact.py)、[`target_file.py`](src/domain/entities/target_file.py)
+  - 存储: [`storage.py`](src/shared/storage.py)
+  - 数据目录: [`data/sources/`](../data/sources)、[`data/templates/`](../data/templates)、[`data/intermediates/`](../data/intermediates)、[`data/targets/`](../data/targets)
+  - 数据库脚本: [`init-db.py`](../scripts/init-db.py)、[`verify-db.py`](../scripts/verify-db.py)
+- [x] T011 [P1] [US2] 实现源文件上传/查询/更新/删除/归档 API（含文件落盘）
+
+  **相关文件**:
+  - Entity: [`source_file.py`](src/domain/entities/source_file.py)
+  - Repository: [`source_file_repository.py`](src/application/repositories/source_file_repository.py)
+  - Service: [`source_file_service.py`](src/application/services/source_file_service.py)
+  - Route: [`sources.py`](src/interfaces/api/routes/sources.py)
+  - Schema: [`source_file.py`](src/application/schemas/source_file.py)
+  - 目录说明: [`entities/00-目录说明.md`](src/domain/entities/00-目录说明.md)、[`schemas/00-目录说明.md`](src/application/schemas/00-目录说明.md)
 - [ ] T012 [P1] [US2] 实现模板上传/CRUD/锁定/预处理校验 API（预处理不使用 LLM）
-- [ ] T013 [P2] [US2] 实现中间态列表/详情/删除 API
+
+  **相关文件**:
+  - Entity: [`template.py`](src/domain/entities/template.py)
+  - Repository: [`template_repository.py`](src/application/repositories/template_repository.py)
+  - Service: [`template_service.py`](src/application/services/template_service.py)
+  - Route: [`templates.py`](src/interfaces/api/routes/templates.py)
+  - Schema: [`template.py`](src/application/schemas/template.py)
+- [x] T013 [P2] [US2] 实现中间态列表/详情/删除 API
+
+  **相关文件**:
+  - Entity: [`intermediate_artifact.py`](src/domain/entities/intermediate_artifact.py)
+  - Repository: [`intermediate_artifact_repository.py`](src/application/repositories/intermediate_artifact_repository.py)
+  - Service: [`intermediate_artifact_service.py`](src/application/services/intermediate_artifact_service.py)
+  - Route: [`intermediates.py`](src/interfaces/api/routes/intermediates.py)
+  - Schema: [`intermediate_artifact.py`](src/application/schemas/intermediate_artifact.py)
+  - 目录说明: [`entities/00-目录说明.md`](src/domain/entities/00-目录说明.md)、[`schemas/00-目录说明.md`](src/application/schemas/00-目录说明.md)
 - [ ] T014 [P2] [US2] 实现目标文件查询/下载 API
+
+  **相关文件**:
+  - Entity: [`target_file.py`](src/domain/entities/target_file.py)
+  - Repository: [`target_file_repository.py`](src/application/repositories/target_file_repository.py)
+  - Service: [`target_file_service.py`](src/application/services/target_file_service.py)
+  - Route: [`targets.py`](src/interfaces/api/routes/targets.py)
+  - Schema: [`target_file.py`](src/application/schemas/target_file.py)
 
 ---
 
@@ -83,4 +155,4 @@ links:
 
 ---
 
-**版本**: 1.0.0 | **创建**: 2026-01-16 | **最后更新**: 2026-01-16
+**版本**: 1.1.0 | **创建**: 2026-01-16 | **最后更新**: 2026-01-16

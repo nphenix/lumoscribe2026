@@ -2,13 +2,23 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, Integer, String, Text, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
+if TYPE_CHECKING:
+    # 避免循环导入，仅用于类型检查
+    pass
+
 
 class Base(DeclarativeBase):
-    pass
+    """SQLAlchemy 声明式基类。"""
+
+    @classmethod
+    def register_entity(cls, entity_cls) -> None:
+        """手动注册实体到 metadata（解决循环导入问题）。"""
+        cls.metadata.add(entity_cls)
 
 
 class Job(Base):

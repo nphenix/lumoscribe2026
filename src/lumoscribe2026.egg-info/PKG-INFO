@@ -3,12 +3,12 @@ Name: lumoscribe2026
 Version: 0.1.0
 Summary: 面向 AI 的文档生成平台（第一阶段）
 Requires-Python: >=3.12
-Requires-Dist: fastapi<1.0,>=0.110
-Requires-Dist: uvicorn[standard]<1.0,>=0.27
-Requires-Dist: pydantic-settings<3.0,>=2.2
-Requires-Dist: sqlalchemy<3.0,>=2.0
-Requires-Dist: python-json-logger<3.0,>=2.0
-Requires-Dist: httpx<1.0,>=0.26
-Requires-Dist: pytest<9.0,>=8.0
-Requires-Dist: celery[redis]<6.0,>=5.3
-Requires-Dist: redis<6.0,>=5.0
+Requires-Dist: fastapi>=0.115
+Requires-Dist: uvicorn[standard]>=0.30
+Requires-Dist: pydantic-settings>=2.6
+Requires-Dist: sqlalchemy>=2.0
+Requires-Dist: python-json-logger>=2.0
+Requires-Dist: httpx>=0.28
+Requires-Dist: pytest>=8.0
+Requires-Dist: celery[redis]>=5.4
+Requires-Dist: redis>=5.2
