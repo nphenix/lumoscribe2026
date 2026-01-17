@@ -195,10 +195,30 @@ links:
 
 **目标**: 模板驱动长文生成；模板骨架不变；输出单 HTML。
 
-- [ ] T040 [P0] [US3] 模板预处理/校验：占位符与结构校验；锁定后禁止修改（不使用 LLM）
-- [ ] T041 [P1] [US3] RAG 检索与上下文组装（基于 LlamaIndex 混合检索 +  Rerank）
-- [ ] T042 [P1] [US3] 按模板 section 生成内容（推理 LLM 润色），召回的图表要使用T043能力重新渲染，输出单 HTML 并写入 `target_files`
-- [ ] T043 [P2] [US3] 图表 JSON → 图表渲染原子能力（基于 JSON 动态绘制 SVG/PNG/HTML snippet）
+- [x] T040 [P0] [US3] 模板预处理/校验：占位符与结构校验；锁定后禁止修改（不使用 LLM）
+
+   **相关文件**:
+   - 服务: [`template_service.py`](src/application/services/template_service.py)
+   - Schema: [`template.py`](src/application/schemas/template.py)
+   - 能力: 占位符校验 (\{\{\w+\}\})、Markdown 结构校验、Office 格式校验、模板锁定
+- [x] T041 [P1] [US3] RAG 检索与上下文组装（基于 LlamaIndex 混合检索 +  Rerank）
+
+   **相关文件**:
+   - 服务: [`hybrid_search_service.py`](src/application/services/hybrid_search_service.py)
+   - Schema: [`ingest.py`](src/application/schemas/ingest.py)
+   - 能力: 向量检索、BM25 检索、RRF 融合、Cross-Encoder 重排序、上下文组装
+- [x] T042 [P1] [US3] 按模板 section 生成内容（推理 LLM 润色），召回的图表要使用T043能力重新渲染，输出单 HTML 并写入 `target_files`
+
+   **相关文件**:
+   - 服务: [`content_generation_service.py`](src/application/services/content_generation_service.py)
+   - Schema: [`chart_spec.py`](src/application/schemas/chart_spec.py)
+   - 能力: 模板 section 解析、RAG 上下文注入、LLM 内容生成、Markdown 转 HTML、最终 HTML 组装
+- [x] T043 [P2] [US3] 图表 JSON → 图表渲染原子能力（基于 JSON 动态绘制 SVG/PNG/HTML snippet）
+
+   **相关文件**:
+   - 服务: [`chart_renderer_service.py`](src/application/services/chart_renderer_service.py)
+   - Schema: [`chart_spec.py`](src/application/schemas/chart_spec.py)
+   - 能力: ECharts 渲染、Chart.js 渲染、动态图表生成、SVG/PNG/HTML 输出
 
 ---
 
