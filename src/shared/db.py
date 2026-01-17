@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Integer, String, Text, create_engine
+from sqlalchemy import DateTime, Integer, String, Text, create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 if TYPE_CHECKING:
@@ -53,3 +53,24 @@ def make_session_factory(engine):
 
 def init_db(engine) -> None:
     Base.metadata.create_all(engine)
+    _apply_lightweight_sqlite_migrations(engine)
+
+
+def _apply_lightweight_sqlite_migrations(engine) -> None:
+    """轻量 SQLite 迁移：为已有表补齐新列（避免开发期频繁删库）。
+
+    说明：
+    - 本项目未引入 Alembic，因此仅做“向后兼容”的 add column。
+    - 仅对 SQLite 生效。
+    """
+    if engine.dialect.name != "sqlite":
+        return
+
+    inspector = inspect(engine)
+
+    # llm_providers.api_key（明文）
+    if "llm_providers" in inspector.get_table_names():
+        cols = {c["name"] for c in inspector.get_columns("llm_providers")}
+        if "api_key" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE llm_providers ADD COLUMN api_key TEXT"))

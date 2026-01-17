@@ -32,6 +32,7 @@ class SourceFileResponse(BaseModel):
     workspace_id: str
     original_filename: str
     file_hash: str
+    file_size: int
     storage_path: str
     status: SourceFileStatus
     archived_at: datetime | None
@@ -49,6 +50,7 @@ class SourceFileListItem(BaseModel):
     id: str
     workspace_id: str
     original_filename: str
+    file_size: int
     storage_path: str
     status: SourceFileStatus
     created_at: datetime

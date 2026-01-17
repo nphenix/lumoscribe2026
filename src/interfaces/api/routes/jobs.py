@@ -29,6 +29,11 @@ class JobResponse(BaseModel):
     finished_at: datetime | None
 
 
+class JobListResponse(BaseModel):
+    items: list[JobResponse]
+    total: int
+
+
 @router.post("/jobs", response_model=JobResponse)
 def create_job(payload: CreateJobRequest, db: Session = Depends(get_db)):
     job = Job(kind=payload.kind, status="pending", progress=0)
@@ -51,6 +56,39 @@ def create_job(payload: CreateJobRequest, db: Session = Depends(get_db)):
         started_at=job.started_at,
         finished_at=job.finished_at,
     )
+
+
+@router.get("/jobs", response_model=JobListResponse)
+def list_jobs(
+    limit: int = 20,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    from sqlalchemy import select, func
+
+    # Query items
+    stmt = select(Job).order_by(Job.created_at.desc()).limit(limit).offset(offset)
+    jobs = db.execute(stmt).scalars().all()
+
+    # Query total count
+    count_stmt = select(func.count()).select_from(Job)
+    total = db.execute(count_stmt).scalar() or 0
+
+    items = [
+        JobResponse(
+            id=job.id,
+            kind=job.kind,
+            status=job.status,
+            progress=job.progress,
+            celery_task_id=job.celery_task_id,
+            created_at=job.created_at,
+            started_at=job.started_at,
+            finished_at=job.finished_at,
+        )
+        for job in jobs
+    ]
+
+    return JobListResponse(items=items, total=total)
 
 
 @router.get("/jobs/{job_id}", response_model=JobResponse)

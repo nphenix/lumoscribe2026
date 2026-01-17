@@ -33,6 +33,9 @@ class LLMProvider(Base):
     base_url: Mapped[str | None] = mapped_column(
         String(512), nullable=True
     )  # OpenAI-compatible base_url 等
+    api_key: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )  # API Key/Token 明文（可选）
     api_key_env: Mapped[str | None] = mapped_column(
         String(128), nullable=True
     )  # API Key 环境变量名（不存明文）

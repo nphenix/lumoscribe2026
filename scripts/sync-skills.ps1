@@ -362,6 +362,61 @@ description: 目录结构与文件命名规范
             }
         }
 
+        # 同步 Prompt Standards
+        $SourcePromptStandards = Join-Path $SourceBase "specs/prompt-management-standards.md"
+        if (Test-Path $SourcePromptStandards) {
+            Write-Host "  同步 Prompt Standards..." -ForegroundColor Cyan
+            $PromptStandardsContent = Get-Content $SourcePromptStandards -Raw -Encoding UTF8
+            
+            if ($TargetName -eq "Cursor") {
+                $TargetRuleFile = Join-Path $TargetPath "rules/prompt-management.mdc"
+                $RuleDir = Join-Path $TargetPath "rules"
+                
+                # Cursor MDC Header
+                $MDCHeader = @"
+---
+description: 提示词管理与开发规范（禁止硬编码，使用Registry）
+globs: src/**/*.py
+alwaysApply: true
+---
+
+"@
+                $NewContent = $MDCHeader + $PromptStandardsContent
+                
+                if (-not $WhatIf) {
+                    if (-not (Test-Path $RuleDir)) { New-Item -ItemType Directory -Path $RuleDir -Force | Out-Null }
+                    [System.IO.File]::WriteAllText($TargetRuleFile, $NewContent)
+                }
+            }
+            elseif ($TargetName -eq "Trae IDE") {
+                $TargetRuleFile = Join-Path $TargetPath "rules/prompt-management.md"
+                $RuleDir = Join-Path $TargetPath "rules"
+                
+                # Trae Header
+                $Header = @"
+---
+description: 提示词管理与开发规范（禁止硬编码，使用Registry）
+---
+
+"@
+                $NewContent = $Header + $PromptStandardsContent
+                
+                if (-not $WhatIf) {
+                    if (-not (Test-Path $RuleDir)) { New-Item -ItemType Directory -Path $RuleDir -Force | Out-Null }
+                    Set-Content -Path $TargetRuleFile -Value $NewContent -Encoding UTF8
+                }
+            }
+            elseif ($TargetName -eq "Roo Code") {
+                $TargetRuleFile = Join-Path $TargetPath "rules/02-prompt-management.md"
+                $RuleDir = Join-Path $TargetPath "rules"
+                
+                if (-not $WhatIf) {
+                    if (-not (Test-Path $RuleDir)) { New-Item -ItemType Directory -Path $RuleDir -Force | Out-Null }
+                    Copy-Item -Path $SourcePromptStandards -Destination $TargetRuleFile -Force
+                }
+            }
+        }
+
         # 清理 commands 目录（强制使用自然语言）
         $CommandsDir = Join-Path $TargetPath "commands"
         if (Test-Path $CommandsDir) {

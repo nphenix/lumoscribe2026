@@ -32,6 +32,10 @@ def configure_logging(level: str = "INFO") -> None:
 def get_logger(name: str) -> logging.Logger:
     return logging.getLogger(name)
 
+# 兼容旧代码直接导入 logger 的情况
+logger = get_logger("app")
+
+
 
 def log_extra(**kwargs: Any) -> dict[str, Any]:
     # 统一将附加信息写入 structured logging 的 extra 字段

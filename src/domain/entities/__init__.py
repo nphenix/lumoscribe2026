@@ -7,6 +7,7 @@ from .target_file import TargetFile
 from .llm_provider import LLMProvider
 from .llm_model import LLMModel
 from .llm_capability import LLMCapability
+from .llm_call_site import LLMCallSite
 from .prompt import Prompt
 
 __all__ = [
@@ -17,5 +18,6 @@ __all__ = [
     "LLMProvider",
     "LLMModel",
     "LLMCapability",
+    "LLMCallSite",
     "Prompt",
 ]

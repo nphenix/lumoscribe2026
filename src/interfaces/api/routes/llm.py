@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from src.application.repositories.llm_capability_repository import (
     LLMCapabilityRepository,
 )
+from src.application.repositories.llm_call_site_repository import LLMCallSiteRepository
 from src.application.repositories.llm_model_repository import LLMModelRepository
 from src.application.repositories.llm_provider_repository import (
     LLMProviderRepository,
@@ -20,6 +21,10 @@ from src.application.schemas.llm import (
     LLMCapabilityPatchRequest,
     LLMCapabilityPatchResponse,
     LLMCapabilityResponse,
+    LLMCallSiteCreate,
+    LLMCallSiteListResponse,
+    LLMCallSiteResponse,
+    LLMCallSiteUpdate,
     LLMModelCreate,
     LLMModelDeleteResponse,
     LLMModelListResponse,
@@ -32,6 +37,7 @@ from src.application.schemas.llm import (
     LLMProviderUpdate,
 )
 from src.application.services.llm_capability_service import LLMCapabilityService
+from src.application.services.llm_call_site_service import LLMCallSiteService
 from src.application.services.llm_model_service import LLMModelService
 from src.application.services.llm_provider_service import LLMProviderService
 from src.interfaces.api.deps import get_db
@@ -69,6 +75,13 @@ def get_capability_service(db: Session = Depends(get_db)) -> LLMCapabilityServic
     capability_repo = LLMCapabilityRepository(db)
     model_repo = LLMModelRepository(db)
     return LLMCapabilityService(capability_repo, model_repo)
+
+
+def get_callsite_service(db: Session = Depends(get_db)) -> LLMCallSiteService:
+    """获取 CallSite 服务实例。"""
+    callsite_repo = LLMCallSiteRepository(db)
+    model_repo = LLMModelRepository(db)
+    return LLMCallSiteService(callsite_repo, model_repo)
 
 
 @router.get(
@@ -129,6 +142,7 @@ def create_provider(
         name=payload.name,
         provider_type=payload.provider_type,
         base_url=payload.base_url,
+        api_key=payload.api_key,
         api_key_env=payload.api_key_env,
         config=payload.config,
         enabled=payload.enabled,
@@ -165,6 +179,7 @@ def update_provider(
         name=payload.name,
         provider_type=payload.provider_type,
         base_url=payload.base_url,
+        api_key=payload.api_key,
         api_key_env=payload.api_key_env,
         config=payload.config,
         enabled=payload.enabled,
@@ -412,4 +427,118 @@ def patch_capabilities(
             )
             for item in results
         ]
+    )
+
+
+@router.get(
+    "/llm/call-sites",
+    response_model=LLMCallSiteListResponse,
+    summary="列出 CallSite",
+    description="获取 LLM 调用点列表，支持过滤。",
+)
+def list_call_sites(
+    key: Annotated[str | None, Query(max_length=256)] = None,
+    expected_model_kind: Annotated[str | None, Query(max_length=64)] = None,
+    enabled: Annotated[bool | None, Query()] = None,
+    bound: Annotated[bool | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    service: LLMCallSiteService = Depends(get_callsite_service),
+):
+    items, total = service.list_call_sites(
+        key=key,
+        expected_model_kind=expected_model_kind,
+        enabled=enabled,
+        bound=bound,
+        limit=limit,
+        offset=offset,
+    )
+    return LLMCallSiteListResponse(
+        items=[
+            LLMCallSiteResponse(
+                id=item.id,
+                key=item.key,
+                expected_model_kind=item.expected_model_kind,
+                model_id=item.model_id,
+                config=_parse_config(item.config_json),
+                prompt_scope=item.prompt_scope,
+                enabled=item.enabled,
+                description=item.description,
+                created_at=item.created_at,
+                updated_at=item.updated_at,
+            )
+            for item in items
+        ],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.post(
+    "/llm/call-sites",
+    response_model=LLMCallSiteResponse,
+    status_code=201,
+    summary="创建 CallSite",
+    description="创建新的 LLM 调用点（通常由 seed 自动创建）。",
+)
+def create_call_site(
+    payload: LLMCallSiteCreate,
+    service: LLMCallSiteService = Depends(get_callsite_service),
+):
+    item = service.create_call_site(
+        key=payload.key,
+        expected_model_kind=payload.expected_model_kind,
+        model_id=payload.model_id,
+        config=payload.config,
+        prompt_scope=payload.prompt_scope,
+        enabled=payload.enabled,
+        description=payload.description,
+    )
+    return LLMCallSiteResponse(
+        id=item.id,
+        key=item.key,
+        expected_model_kind=item.expected_model_kind,
+        model_id=item.model_id,
+        config=_parse_config(item.config_json),
+        prompt_scope=item.prompt_scope,
+        enabled=item.enabled,
+        description=item.description,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+    )
+
+
+@router.patch(
+    "/llm/call-sites/{callsite_id}",
+    response_model=LLMCallSiteResponse,
+    summary="更新 CallSite",
+    description="更新 LLM 调用点配置（绑定模型/参数覆盖/prompt_scope）。",
+)
+def update_call_site(
+    callsite_id: str,
+    payload: LLMCallSiteUpdate,
+    service: LLMCallSiteService = Depends(get_callsite_service),
+):
+    item = service.update_call_site(
+        callsite_id=callsite_id,
+        model_id=payload.model_id,
+        config=payload.config,
+        prompt_scope=payload.prompt_scope,
+        enabled=payload.enabled,
+        description=payload.description,
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="CallSite 不存在")
+    return LLMCallSiteResponse(
+        id=item.id,
+        key=item.key,
+        expected_model_kind=item.expected_model_kind,
+        model_id=item.model_id,
+        config=_parse_config(item.config_json),
+        prompt_scope=item.prompt_scope,
+        enabled=item.enabled,
+        description=item.description,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
     )

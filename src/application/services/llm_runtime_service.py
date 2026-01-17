@@ -14,7 +14,8 @@ import os
 from typing import Any, Protocol, Union, runtime_checkable
 
 from langchain_core.callbacks.manager import CallbackManagerForLLMRun
-from langchain_core.language_models import LanguageModelInput, LLMResult
+from langchain_core.language_models import LanguageModelInput
+from langchain_core.outputs import LLMResult
 from langchain_core.language_models.llms import LLM
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
@@ -22,13 +23,14 @@ from langchain_openai import ChatOpenAI
 from langchain_community.chat_models import ChatOllama
 from langchain_community.llms import LlamaCpp
 from langchain_community.embeddings import LlamaCppEmbeddings
-from langchain_huggingface import HuggingFaceEmbeddings
 
 from src.application.repositories.llm_capability_repository import LLMCapabilityRepository
+from src.application.repositories.llm_call_site_repository import LLMCallSiteRepository
 from src.application.repositories.llm_model_repository import LLMModelRepository
 from src.application.repositories.llm_provider_repository import LLMProviderRepository
 from src.application.repositories.prompt_repository import PromptRepository
 from src.domain.entities.llm_capability import LLMCapability
+from src.domain.entities.llm_call_site import LLMCallSite
 from src.domain.entities.llm_model import LLMModel
 from src.domain.entities.llm_provider import LLMProvider
 from src.domain.entities.prompt import Prompt
@@ -265,14 +267,57 @@ class LLMRuntimeService:
         provider_repository: LLMProviderRepository,
         model_repository: LLMModelRepository,
         capability_repository: LLMCapabilityRepository,
+        callsite_repository: LLMCallSiteRepository,
         prompt_repository: PromptRepository,
     ):
         self.provider_repository = provider_repository
         self.model_repository = model_repository
         self.capability_repository = capability_repository
+        self.callsite_repository = callsite_repository
         self.prompt_repository = prompt_repository
 
     # ============== 统一构建接口 ==============
+
+    def build_runnable_for_callsite(self, callsite_key: str):
+        """构建指定调用点的 runnable。
+
+        Args:
+            callsite_key: 调用点 key（建议 module:action）
+
+        Returns:
+            LangChain Runnable 对象
+        """
+        provider, model, callsite = self._resolve_callsite_provider_model(callsite_key)
+        callsite_config = self._parse_json(callsite.config_json)
+        model_kind = model.model_kind
+
+        if model_kind == self.MODEL_KIND_CHAT:
+            scope = callsite.prompt_scope or callsite.key
+            prompt = self._get_active_prompt(scope)
+            llm = self._build_chat_model(provider, model, callsite_config)
+            prompt_template = self._build_prompt(prompt)
+            return prompt_template | llm | StrOutputParser()
+
+        elif model_kind == self.MODEL_KIND_EMBEDDING:
+            return self._build_embedding_model(provider, model, callsite_config)
+
+        elif model_kind == self.MODEL_KIND_RERANK:
+            return self._build_rerank_model(provider, model, callsite_config)
+
+        elif model_kind == self.MODEL_KIND_MULTIMODAL:
+            scope = callsite.prompt_scope or callsite.key
+            prompt = self._get_active_prompt(scope)
+            llm = self._build_multimodal_model(provider, model, callsite_config)
+            prompt_template = self._build_prompt(prompt)
+            return prompt_template | llm
+
+        else:
+            raise AppError(
+                code="unsupported_model_kind",
+                message=f"不支持的模型类型: {model_kind}",
+                status_code=400,
+                details={"callsite_key": callsite_key},
+            )
 
     def build_runnable_for_capability(self, capability: str):
         """构建指定能力的 runnable。
@@ -283,6 +328,11 @@ class LLMRuntimeService:
         Returns:
             LangChain Runnable 对象
         """
+        # 兼容：如果存在同名 callsite，优先走 callsite 配置
+        callsite = self.callsite_repository.get_by_key(capability)
+        if callsite is not None:
+            return self.build_runnable_for_callsite(capability)
+
         provider, model, _mapping = self._resolve_provider_model(capability)
         model_kind = model.model_kind
 
@@ -322,6 +372,11 @@ class LLMRuntimeService:
         Returns:
             模型实例（根据类型不同返回不同协议）
         """
+        # 兼容：如果存在同名 callsite，优先走 callsite 配置
+        callsite = self.callsite_repository.get_by_key(capability)
+        if callsite is not None:
+            return self.get_model_for_callsite(capability)
+
         provider, model, _mapping = self._resolve_provider_model(capability)
         model_kind = model.model_kind
 
@@ -344,15 +399,46 @@ class LLMRuntimeService:
                 status_code=400,
             )
 
+    def get_model_for_callsite(
+        self, callsite_key: str
+    ) -> Union[ChatProtocol, EmbeddingProtocol, RerankProtocol]:
+        """获取指定调用点的模型实例。"""
+        provider, model, callsite = self._resolve_callsite_provider_model(callsite_key)
+        callsite_config = self._parse_json(callsite.config_json)
+        model_kind = model.model_kind
+
+        if model_kind == self.MODEL_KIND_CHAT:
+            return self._build_chat_model(provider, model, callsite_config)
+
+        elif model_kind == self.MODEL_KIND_EMBEDDING:
+            return self._build_embedding_model(provider, model, callsite_config)
+
+        elif model_kind == self.MODEL_KIND_RERANK:
+            return self._build_rerank_model(provider, model, callsite_config)
+
+        elif model_kind == self.MODEL_KIND_MULTIMODAL:
+            return self._build_multimodal_model(provider, model, callsite_config)
+
+        else:
+            raise AppError(
+                code="unsupported_model_kind",
+                message=f"不支持的模型类型: {model_kind}",
+                status_code=400,
+                details={"callsite_key": callsite_key},
+            )
+
     # ============== 模型构建方法 ==============
 
     def _build_chat_model(
-        self, provider: LLMProvider, model: LLMModel
+        self,
+        provider: LLMProvider,
+        model: LLMModel,
+        callsite_config: dict | None = None,
     ) -> ChatProtocol:
         """构建对话模型。"""
         provider_config = self._parse_json(provider.config_json)
         model_config = self._parse_json(model.config_json)
-        config = {**provider_config, **model_config}
+        config = {**provider_config, **model_config, **(callsite_config or {})}
 
         extra_body = config.pop("extra_body", None)
         model_kwargs = config.pop("model_kwargs", None)
@@ -416,7 +502,10 @@ class LLMRuntimeService:
         )
 
     def _build_embedding_model(
-        self, provider: LLMProvider, model: LLMModel
+        self,
+        provider: LLMProvider,
+        model: LLMModel,
+        callsite_config: dict | None = None,
     ) -> EmbeddingProtocol:
         """构建向量模型。
 
@@ -427,7 +516,7 @@ class LLMRuntimeService:
         """
         provider_config = self._parse_json(provider.config_json)
         model_config = self._parse_json(model.config_json)
-        config = {**provider_config, **model_config}
+        config = {**provider_config, **model_config, **(callsite_config or {})}
 
         model_name = model.name
 
@@ -465,6 +554,14 @@ class LLMRuntimeService:
 
         # HuggingFace Embeddings
         if provider.provider_type == "huggingface":
+            try:
+                from langchain_huggingface import HuggingFaceEmbeddings
+            except ImportError as exc:
+                raise AppError(
+                    code="huggingface_not_installed",
+                    message="请安装 langchain-huggingface 以使用 HuggingFace Embeddings",
+                    status_code=400,
+                ) from exc
             cache_folder = config.pop("cache_folder", None)
             return HuggingFaceEmbeddings(
                 model_name=model_name,
@@ -488,7 +585,10 @@ class LLMRuntimeService:
         )
 
     def _build_rerank_model(
-        self, provider: LLMProvider, model: LLMModel
+        self,
+        provider: LLMProvider,
+        model: LLMModel,
+        callsite_config: dict | None = None,
     ) -> RerankProtocol:
         """构建重排序模型。
 
@@ -498,7 +598,7 @@ class LLMRuntimeService:
         """
         provider_config = self._parse_json(provider.config_json)
         model_config = self._parse_json(model.config_json)
-        config = {**provider_config, **model_config}
+        config = {**provider_config, **model_config, **(callsite_config or {})}
 
         model_name = model.name
 
@@ -535,7 +635,10 @@ class LLMRuntimeService:
         )
 
     def _build_multimodal_model(
-        self, provider: LLMProvider, model: LLMModel
+        self,
+        provider: LLMProvider,
+        model: LLMModel,
+        callsite_config: dict | None = None,
     ) -> ChatProtocol:
         """构建多模态模型。
 
@@ -545,7 +648,7 @@ class LLMRuntimeService:
         """
         # 多模态模型目前复用 chat 模型接口
         # 通过 config 中的 stop_actions 等参数区分
-        return self._build_chat_model(provider, model)
+        return self._build_chat_model(provider, model, callsite_config)
 
     def _build_prompt(self, prompt: Prompt) -> ChatPromptTemplate:
         """构建 Prompt 模板。"""
@@ -573,6 +676,79 @@ class LLMRuntimeService:
         return ChatPromptTemplate.from_messages(mapped)
 
     # ============== 辅助方法 ==============
+
+    def _resolve_callsite_provider_model(
+        self, callsite_key: str
+    ) -> tuple[LLMProvider, LLMModel, LLMCallSite]:
+        """解析 callsite -> provider/model。"""
+        callsite = self.callsite_repository.get_by_key(callsite_key)
+        if callsite is None:
+            raise AppError(
+                code="llm_callsite_not_found",
+                message=f"未注册的调用点: {callsite_key}",
+                status_code=404,
+                details={"callsite_key": callsite_key},
+            )
+        if not callsite.enabled:
+            raise AppError(
+                code="llm_callsite_disabled",
+                message=f"调用点已禁用: {callsite_key}",
+                status_code=400,
+                details={"callsite_key": callsite_key},
+            )
+        if not callsite.model_id:
+            raise AppError(
+                code="llm_callsite_unbound",
+                message=f"调用点未绑定模型: {callsite_key}",
+                status_code=409,
+                details={"callsite_key": callsite_key},
+            )
+
+        model = self.model_repository.get_by_id(callsite.model_id)
+        if model is None:
+            raise AppError(
+                code="llm_callsite_model_not_found",
+                message="调用点绑定的模型不存在",
+                status_code=404,
+                details={"callsite_key": callsite_key, "model_id": callsite.model_id},
+            )
+        if not model.enabled:
+            raise AppError(
+                code="llm_callsite_model_disabled",
+                message="调用点绑定的模型已禁用",
+                status_code=400,
+                details={"callsite_key": callsite_key, "model_id": model.id},
+            )
+
+        provider = self.provider_repository.get_by_id(model.provider_id)
+        if provider is None:
+            raise AppError(
+                code="llm_callsite_provider_not_found",
+                message="调用点绑定的 Provider 不存在",
+                status_code=404,
+                details={"callsite_key": callsite_key, "provider_id": model.provider_id},
+            )
+        if not provider.enabled:
+            raise AppError(
+                code="llm_callsite_provider_disabled",
+                message="调用点绑定的 Provider 已禁用",
+                status_code=400,
+                details={"callsite_key": callsite_key, "provider_id": provider.id},
+            )
+
+        if model.model_kind != callsite.expected_model_kind:
+            raise AppError(
+                code="llm_callsite_kind_mismatch",
+                message="调用点期望类型与模型类型不一致",
+                status_code=400,
+                details={
+                    "callsite_key": callsite_key,
+                    "expected_model_kind": callsite.expected_model_kind,
+                    "model_kind": model.model_kind,
+                },
+            )
+
+        return provider, model, callsite
 
     def _resolve_provider_model(
         self, capability: str
@@ -612,6 +788,9 @@ class LLMRuntimeService:
 
     def _resolve_api_key(self, provider: LLMProvider) -> str | None:
         """解析 API Key。"""
+        # 优先使用 DB 中的明文（若配置）
+        if provider.api_key:
+            return provider.api_key
         if not provider.api_key_env:
             return None
         api_key = os.getenv(provider.api_key_env)

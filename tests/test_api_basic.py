@@ -1,40 +1,35 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 import httpx
-
-from src.shared.config import reset_settings_for_tests
-
-
-@pytest.fixture()
-async def api_client(tmp_path: Path):
-    # 为测试隔离运行时目录与 sqlite 文件
-    runtime_dir = tmp_path / "runtime"
-    storage_root = runtime_dir / "storage"
-    sqlite_path = runtime_dir / "sqlite" / "test.db"
-
-    import os
-
-    os.environ["LUMO_STORAGE_ROOT"] = str(storage_root)
-    os.environ["LUMO_SQLITE_PATH"] = str(sqlite_path)
-    os.environ["LUMO_DISABLE_DOTENV"] = "1"
-    reset_settings_for_tests()
-
-    from src.interfaces.api.app import create_app
-
-    app = create_app()
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client
 
 
 @pytest.mark.anyio
 async def test_health(api_client: httpx.AsyncClient):
     resp = await api_client.get("/v1/health")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
+    data = resp.json()
+    
+    assert data["status"] in ["ok", "error"]
+    assert "version" in data
+    assert "components" in data
+    assert "info" in data
+    
+    components = data["components"]
+    assert "db" in components
+    assert "redis" in components
+    assert "worker" in components
+    
+    info = data["info"]
+    assert "db" in info
+    assert "worker" in info
+    assert "type" in info["db"]
+    assert "path" in info["db"]
+    assert "description" in info["db"]
+    assert "description" in info["worker"]
+    
+    # In test environment with SQLite, DB should be connected
+    assert components["db"] is True
 
 
 @pytest.mark.anyio

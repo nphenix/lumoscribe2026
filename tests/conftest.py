@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+import httpx
+import pytest
+
+from src.shared.config import reset_settings_for_tests
 
 
 def pytest_configure(config) -> None:
@@ -27,3 +33,28 @@ def pytest_configure(config) -> None:
         return
 
     config.option.basetemp = str(preferred)
+
+
+@pytest.fixture()
+async def api_client(tmp_path: Path):
+    """全局 API 客户端 Fixture，为每个测试用例提供隔离的运行时环境（SQLite + Storage）。"""
+    # 为测试隔离运行时目录与 sqlite 文件
+    runtime_dir = tmp_path / "runtime"
+    storage_root = runtime_dir / "storage"
+    sqlite_path = runtime_dir / "sqlite" / "test.db"
+
+    # 配置环境变量
+    os.environ["LUMO_STORAGE_ROOT"] = str(storage_root)
+    os.environ["LUMO_SQLITE_PATH"] = str(sqlite_path)
+    # 禁用加载 .env 文件，防止本地配置干扰测试
+    os.environ["LUMO_DISABLE_DOTENV"] = "1"
+    
+    # 重置 settings 单例以应用新的环境变量
+    reset_settings_for_tests()
+
+    from src.interfaces.api.app import create_app
+
+    app = create_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client

@@ -36,6 +36,7 @@ class LLMProviderService:
         name: str,
         provider_type: str,
         base_url: str | None = None,
+        api_key: str | None = None,
         api_key_env: str | None = None,
         config: dict | None = None,
         enabled: bool = True,
@@ -56,6 +57,7 @@ class LLMProviderService:
             name=name,
             provider_type=provider_type,
             base_url=base_url,
+            api_key=api_key,
             api_key_env=api_key_env,
             config_json=self._serialize_config(config),
             enabled=enabled,
@@ -89,6 +91,7 @@ class LLMProviderService:
         name: str | None = None,
         provider_type: str | None = None,
         base_url: str | None = None,
+        api_key: str | None = None,
         api_key_env: str | None = None,
         config: dict | None = None,
         enabled: bool | None = None,
@@ -114,6 +117,9 @@ class LLMProviderService:
 
         if base_url is not None:
             provider.base_url = base_url
+
+        if api_key is not None:
+            provider.api_key = api_key
 
         if api_key_env is not None:
             provider.api_key_env = api_key_env

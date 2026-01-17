@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import Enum as PyEnum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Enum, String, Text
+from sqlalchemy import DateTime, Enum, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ...shared.db import Base
@@ -44,6 +44,9 @@ class SourceFile(Base):
     file_hash: Mapped[str] = mapped_column(
         String(64), nullable=False, unique=True, index=True
     )  # SHA256 哈希值
+    file_size: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )  # 文件大小（字节）
     storage_path: Mapped[str] = mapped_column(
         String(1024), nullable=False
     )  # 相对存储路径（data/sources/{workspace_name}/{filename}）

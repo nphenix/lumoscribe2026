@@ -27,7 +27,13 @@ from src.application.schemas.document_cleaning import (
     CleanedDocumentArtifact,
 )
 from src.application.services.llm_runtime_service import LLMRuntimeService
+from src.application.services.prompt_service import PromptService
 from src.domain.entities.intermediate_artifact import IntermediateType
+from src.shared.constants.prompts import (
+    DEFAULT_PROMPTS,
+    SCOPE_CHART_EXTRACTION,
+    SCOPE_DOC_CLEANING,
+)
 from src.shared.logging import logger
 
 
@@ -74,9 +80,11 @@ class DocumentCleaningService:
         self,
         llm_runtime: LLMRuntimeService,
         artifact_repository: IntermediateArtifactRepository,
+        prompt_service: PromptService,
     ):
         self.llm_runtime = llm_runtime
         self.artifact_repository = artifact_repository
+        self.prompt_service = prompt_service
 
     async def clean_document(
         self,
@@ -188,7 +196,7 @@ class DocumentCleaningService:
     async def llm_clean(self, text: str, options: CleaningOptions) -> str:
         """LLM 智能清洗。
 
-        使用 doc_clean capability 调用推理 LLM，保留文档结构，移除噪声。
+        使用 callsite `doc_cleaning:clean_text` 调用推理 LLM，保留文档结构，移除噪声。
 
         Args:
             text: 规则过滤后的文本
@@ -199,11 +207,20 @@ class DocumentCleaningService:
         """
         try:
             # 构建提示词
-            prompt = self._build_llm_clean_prompt(text, options)
+            prompt_text = self._build_llm_clean_prompt(text, options)
 
-            # 调用 LLM
-            runnable = self.llm_runtime.build_runnable_for_capability("doc_clean")
-            cleaned = await runnable.ainvoke({"input": text})
+            # 获取模型实例 (绕过 LLMRuntime 的固定 Prompt 逻辑)
+            llm = self.llm_runtime.get_model_for_callsite(SCOPE_DOC_CLEANING)
+
+            # 构建链: Prompt -> LLM -> OutputParser
+            # 由于 prompt_text 已经是完整的提示词（包含指令和文本），直接作为输入
+            from langchain_core.output_parsers import StrOutputParser
+            from langchain_core.prompts import ChatPromptTemplate
+
+            prompt_template = ChatPromptTemplate.from_messages([("human", "{input}")])
+            chain = prompt_template | llm | StrOutputParser()
+
+            cleaned = await chain.ainvoke({"input": prompt_text})
 
             # 解析结果
             if isinstance(cleaned, str):
@@ -237,13 +254,18 @@ class DocumentCleaningService:
 
         instructions_str = "\n".join(instructions)
 
-        prompt = f"""{instructions_str}
+        # 获取提示词模板
+        prompt_entity = self.prompt_service.get_active_prompt(SCOPE_DOC_CLEANING)
+        if prompt_entity and prompt_entity.content:
+            template = prompt_entity.content
+        else:
+            template = DEFAULT_PROMPTS[SCOPE_DOC_CLEANING]["content"]
 
-请对以下文档进行清洗，保留有意义的正文内容：
-
-{text}
-
-请直接返回清洗后的文本，不要添加任何解释或注释。"""
+        # 渲染提示词
+        # 简单替换 {instructions} 和 {text}，避免 format 报错
+        prompt = template.replace("{instructions}", instructions_str).replace(
+            "{text}", text
+        )
 
         return prompt
 
@@ -365,9 +387,11 @@ class ChartExtractionService:
         self,
         llm_runtime: LLMRuntimeService,
         artifact_repository: IntermediateArtifactRepository,
+        prompt_service: PromptService,
     ):
         self.llm_runtime = llm_runtime
         self.artifact_repository = artifact_repository
+        self.prompt_service = prompt_service
 
     async def extract_charts(
         self,
@@ -563,22 +587,49 @@ class ChartExtractionService:
                 return None
 
             # 构建提示词
-            prompt = self._build_chart_prompt(chart_type)
+            prompt_text = self._build_chart_prompt(chart_type)
 
-            # 调用多模态模型
-            runnable = self.llm_runtime.build_runnable_for_capability("chart_ocr")
+            # 获取模型实例
+            llm = self.llm_runtime.get_model_for_callsite(SCOPE_CHART_EXTRACTION)
 
-            # 对于多模态模型，需要传递图片路径
-            # LangChain 多模态模型通常支持图片 URL 或 base64
-            result = await runnable.ainvoke(
-                {
-                    "input": prompt,
-                    "image_path": chart_image_path,
-                }
+            # 构建链
+            # 注意：多模态模型通常需要特定的 Prompt 结构来传递图片
+            # 这里假设 LLMRuntime 返回的 ChatProtocol 支持 standard LangChain message format
+            from langchain_core.messages import HumanMessage
+
+            # 构造多模态消息
+            # LangChain 标准格式：content=[{"type": "text", ...}, {"type": "image_url", ...}]
+            # 但具体的 LLM 实现可能有所不同，这里假设 LLMRuntimeService 会处理好适配
+            # 实际上，如果 LLM 是 ChatOpenAI，它支持 base64 或 url
+            # 为了简单起见，我们这里使用 LLMRuntimeService 提供的 build_runnable_for_capability
+            # 但是它绑定了 Prompt... 且多模态的 Prompt 处理比较复杂
+            
+            # 回退方案：如果 capability 为 chart_ocr，我们期望 LLMRuntimeService 能正确处理
+            # 但是我们的 prompt 是动态的 (chart_type)。
+            
+            # 我们手动构建多模态消息
+            # 读取图片并编码为 base64
+            import base64
+            
+            with open(chart_image_path, "rb") as image_file:
+                encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
+            
+            message = HumanMessage(
+                content=[
+                    {"type": "text", "text": prompt_text},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{encoded_string}"
+                        },
+                    },
+                ]
             )
-
+            
+            result = await llm.ainvoke([message])
+            
             # 解析结果
-            json_content = self._parse_chart_result(result)
+            json_content = self._parse_chart_result(result.content if hasattr(result, "content") else result)
 
             return ChartData(
                 chart_id=f"chart_{Path(chart_image_path).stem}",
@@ -609,40 +660,17 @@ class ChartExtractionService:
 
         description = type_descriptions.get(chart_type, "图表")
 
-        prompt = f"""请分析以下{description}图片，提取其中的数据并以 JSON 格式返回。
+        # 获取提示词模板
+        prompt_entity = self.prompt_service.get_active_prompt(SCOPE_CHART_EXTRACTION)
+        if prompt_entity and prompt_entity.content:
+            template = prompt_entity.content
+        else:
+            template = DEFAULT_PROMPTS[SCOPE_CHART_EXTRACTION]["content"]
 
-要求：
-1. 提取所有数据点和数值
-2. 保持数据的层级结构
-3. 如果是表格，请保持行列结构
-4. 如果有标题或标签，请一并提取
-
-请直接返回 JSON 对象，不要添加任何解释。JSON 格式如下：
-{{
-    "title": "图表标题",
-    "type": "{chart_type}",
-    "data": [
-        {{
-            "label": "数据标签",
-            "value": 数值,
-            "description": "描述信息"
-        }}
-    ],
-    "labels": ["x轴标签1", "x轴标签2", ...],
-    "series": [
-        {{
-            "name": "系列名称",
-            "data": [数值1, 数值2, ...]
-        }}
-    ],
-    "metadata": {{
-        "source": "数据来源",
-        "unit": "单位",
-        "note": "备注"
-    }}
-}}
-
-请直接返回 JSON 对象："""
+        # 渲染提示词
+        prompt = template.replace("{description}", description).replace(
+            "{chart_type}", chart_type
+        )
 
         return prompt
 

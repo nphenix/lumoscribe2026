@@ -2,7 +2,7 @@
 id: ai-doc-platform-phase1
 status: IN_PROGRESS
 created: 2026-01-16
-updated: 2026-01-16
+updated: 2026-01-17
 links:
   - ./spec.md
   - ./plan.md
@@ -129,7 +129,7 @@ links:
   - Repositories: [`llm_provider_repository.py`](src/application/repositories/llm_provider_repository.py)、[`llm_model_repository.py`](src/application/repositories/llm_model_repository.py)、[`llm_capability_repository.py`](src/application/repositories/llm_capability_repository.py)
   - Services: [`llm_provider_service.py`](src/application/services/llm_provider_service.py)、[`llm_model_service.py`](src/application/services/llm_model_service.py)、[`llm_capability_service.py`](src/application/services/llm_capability_service.py)
   - Tests: [`test_llm_config_api.py`](tests/test_llm_config_api.py)
-  - Provider 支持: OpenAI 兼容, ChatGPT, Gemini, Ollama, vLLM, GPUStack, FlagEmbedding，llama.cpp
+  - Provider 支持: OpenAI 兼容, ChatGPT, Gemini, Ollama, vLLM, GPUStack, FlagEmbedding，llama.cpp，mineru
   - Model 类型: 推理 (Chat/Completion), Embedding, Rerank, Multimodal, OCR
 - [x] T022 [P1] 实现 prompts CRUD + version/active 切换 API
 
@@ -146,6 +146,24 @@ links:
   - Repositories: [`llm_provider_repository.py`](src/application/repositories/llm_provider_repository.py)、[`llm_model_repository.py`](src/application/repositories/llm_model_repository.py)、[`llm_capability_repository.py`](src/application/repositories/llm_capability_repository.py)、[`prompt_repository.py`](src/application/repositories/prompt_repository.py)
   - 维度1: 技术适配层（标准化不同 Provider 的调用）
   - 维度2: 业务能力层（按 Capability 路由模型：MinerU, 清洗, 润色, 图转JSON, 长文生成, 向量生成）
+- [x] T024 [P1] 重构提示词管理为 Code-First Seed 模式
+  
+  **相关文件**:
+  - 常量: [`src/shared/constants/prompts.py`](src/shared/constants/prompts.py)
+  - 脚本: [`scripts/init-db.py`](scripts/init-db.py)
+  - 业务: [`document_cleaning_service.py`](src/application/services/document_cleaning_service.py)
+  - 变更记录: [`refactor-prompt-management.md`](../changes/2026-01/refactor-prompt-management.md)
+  - 架构文档: [`spec.md`](../features/prompt-management-refactor/spec.md)、[`plan.md`](../features/prompt-management-refactor/plan.md)
+- [x] T025 [P1] 引入“LLM 调用点（CallSite）”配置（按调用位置细粒度绑定模型与参数覆盖）
+
+  **相关文件**:
+  - Entity: [`llm_call_site.py`](src/domain/entities/llm_call_site.py)
+  - Repository: [`llm_call_site_repository.py`](src/application/repositories/llm_call_site_repository.py)
+  - Service: [`llm_call_site_service.py`](src/application/services/llm_call_site_service.py)
+  - Runtime: [`llm_runtime_service.py`](src/application/services/llm_runtime_service.py)
+  - Route: [`llm.py`](src/interfaces/api/routes/llm.py)
+  - Code-First 注册: [`llm_callsites.py`](src/shared/constants/llm_callsites.py)、各模块 `callsites.py`
+  - 数据库初始化/迁移: [`init-db.py`](../scripts/init-db.py)、[`db.py`](src/shared/db.py)
 
 ---
 
@@ -227,11 +245,38 @@ links:
 **目标**: 提供可视化管理界面，涵盖文档管理、LLM 配置、提示词管理与任务观测。
 **技术栈**: Next.js 14+, Shadcn UI, Tailwind CSS
 
-- [ ] T050 [P0] 初始化前端项目（Next.js, Shadcn UI, Tailwind, Axios/TanStack Query）
-- [ ] T051 [P1] 实现文档管理页面（源文件上传/列表/归档，模板管理/锁定，目标文件下载/预览，中间态观测）
-- [ ] T052 [P1] 实现 LLM 配置页面（Provider/Model/Capability 增删改查与测试）
-- [ ] T053 [P1] 实现提示词管理页面（Prompt 列表/版本管理/编辑）
-- [ ] T054 [P2] 实现任务与知识库观测页面（Jobs 状态流转，KB 状态查看）
+- [x] T050 [P0] 初始化前端项目（Next.js, Shadcn UI, Tailwind, Axios/TanStack Query）
+
+  **相关文件**:
+  - 源码目录: [`src/interfaces/admin-web/`](src/interfaces/admin-web/00-目录说明.md)
+  - 布局: [`layout.tsx`](src/interfaces/admin-web/app/layout.tsx)、[`sidebar.tsx`](src/interfaces/admin-web/components/layout/sidebar.tsx)
+  - 基础设施: [`api.ts`](src/interfaces/admin-web/lib/api.ts)、[`providers.tsx`](src/interfaces/admin-web/components/providers.tsx)
+- [x] T051 [P1] 实现文档管理页面（源文件上传/列表/归档，模板管理/锁定，目标文件下载/预览，中间态观测）
+
+  **相关文件**:
+  - 页面: [`sources/`](src/interfaces/admin-web/app/documents/sources/page.tsx)、[`templates/`](src/interfaces/admin-web/app/documents/templates/page.tsx)、[`targets/`](src/interfaces/admin-web/app/documents/targets/page.tsx)、[`intermediates/`](src/interfaces/admin-web/app/documents/intermediates/page.tsx)
+  - Hooks: [`use-documents.ts`](src/interfaces/admin-web/hooks/use-documents.ts)
+- [x] T052 [P1] 实现 LLM 配置页面（Provider/Model/Capability 增删改查与测试）
+
+  **相关文件**:
+  - 页面: [`providers/`](src/interfaces/admin-web/app/llm/providers/page.tsx)、[`models/`](src/interfaces/admin-web/app/llm/models/page.tsx)、[`capabilities/`](src/interfaces/admin-web/app/llm/capabilities/page.tsx)
+  - Hooks: [`use-llm.ts`](src/interfaces/admin-web/hooks/use-llm.ts)
+- [x] T055 [P1] 实现“LLM 调用点”管理页面（绑定模型/参数覆盖/prompt_scope/启用）
+
+  **相关文件**:
+  - 页面: [`call-sites/`](src/interfaces/admin-web/app/llm/call-sites/page.tsx)
+  - Hooks: [`use-llm.ts`](src/interfaces/admin-web/hooks/use-llm.ts)
+  - 导航: [`sidebar.tsx`](src/interfaces/admin-web/components/layout/sidebar.tsx)
+- [x] T053 [P1] 实现提示词管理页面（Prompt 列表/版本管理/编辑）
+
+  **相关文件**:
+  - 页面: [`prompts/`](src/interfaces/admin-web/app/prompts/page.tsx)
+  - Hooks: [`use-prompts.ts`](src/interfaces/admin-web/hooks/use-prompts.ts)
+- [x] T054 [P2] 实现任务与知识库观测页面（Jobs 状态流转，KB 状态查看）
+
+  **相关文件**:
+  - 页面: [`dashboard/`](src/interfaces/admin-web/app/page.tsx)、[`jobs/`](src/interfaces/admin-web/app/observation/jobs/page.tsx)
+  - Hooks: [`use-observation.ts`](src/interfaces/admin-web/hooks/use-observation.ts)
 
 ---
 
@@ -243,4 +288,4 @@ links:
 
 ---
 
-**版本**: 1.4.0 | **创建**: 2026-01-16 | **最后更新**: 2026-01-16
+**版本**: 1.4.1 | **创建**: 2026-01-16 | **最后更新**: 2026-01-17

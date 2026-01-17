@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -29,16 +30,65 @@ from src.interfaces.api.routes.templates import router as templates_router
 log = get_logger(__name__)
 
 
+def _seed_llm_callsites(session_factory) -> None:
+    """从代码种子自动补齐 callsites（仅新增缺失项，不覆盖管理员配置）。"""
+    from uuid import uuid4
+
+    from src.application.repositories.llm_call_site_repository import LLMCallSiteRepository
+    from src.domain.entities.llm_call_site import LLMCallSite
+    from src.shared.constants.llm_callsites import DEFAULT_CALLSITES
+
+    with session_factory() as session:
+        repo = LLMCallSiteRepository(session)
+        for key, data in DEFAULT_CALLSITES.items():
+            expected_model_kind = data.get("expected_model_kind")
+            prompt_scope = data.get("prompt_scope")
+            description = data.get("description")
+
+            existing = repo.get_by_key(key)
+            if existing is None:
+                callsite = LLMCallSite(
+                    id=str(uuid4()),
+                    key=key,
+                    expected_model_kind=expected_model_kind,
+                    model_id=None,
+                    config_json=None,
+                    prompt_scope=prompt_scope,
+                    enabled=True,
+                    description=description,
+                )
+                repo.create(callsite)
+                continue
+
+            # 只同步“代码侧事实”：expected_model_kind/description；不覆盖管理员配置的 model_id/config_json/enabled
+            existing.expected_model_kind = expected_model_kind
+            existing.description = description
+            if existing.prompt_scope is None and prompt_scope is not None:
+                existing.prompt_scope = prompt_scope
+            repo.update(existing)
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     configure_logging(settings.log_level)
 
     app = FastAPI(title="Lumoscribe2026 API", version="0.1.0")
 
+    # 配置 CORS
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # 开发环境允许所有来源，生产环境应限制为前端域名
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["X-Request-ID"],
+    )
+
     engine = make_engine(settings.sqlite_path)
     init_db(engine)
     app.state.engine = engine
     app.state.session_factory = make_session_factory(engine)
+    _seed_llm_callsites(app.state.session_factory)
 
     @app.middleware("http")
     async def request_id_middleware(request: Request, call_next):
@@ -92,6 +142,7 @@ def create_app() -> FastAPI:
                 code=ERROR_INTERNAL,
                 message="internal server error",
                 request_id=get_request_id(),
+                details={"errors": exc.errors()},
             ),
         )
 

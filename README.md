@@ -7,7 +7,7 @@
 - ✅ 后端最小骨架（FastAPI + SQLite）
 - ✅ 任务模型（Job）与基础接口（创建/查询）
 - ✅ Worker（Celery + Redis）与流水线能力（OCR/清洗/切块/索引/生成）
-- ⏳ Next.js 中台
+- ✅ Next.js 中台（Admin Dashboard）
 
 ---
 
@@ -18,17 +18,25 @@
 | 依赖 | 版本要求 | 说明 |
 |------|----------|------|
 | Python | ≥ 3.12 | 项目运行环境 |
+| Node.js | ≥ 20.0 | 前端运行环境 |
 | Redis | ≥ 6.0 | Celery 消息队列 |
 | uv | ≥ 0.4 | 包管理工具（推荐）|
 
 ### 1) 安装依赖
 
+**后端：**
 ```powershell
 # 使用 uv 安装（推荐，速度快）
 uv pip install -e .
 
 # 或使用 pip 安装
 pip install -e .
+```
+
+**前端：**
+```powershell
+cd src/interfaces/admin-web
+npm install
 ```
 
 ### 2) 启动 Redis
@@ -61,47 +69,32 @@ $LUMO_STORAGE_ROOT = "$PWD\storage"
 $LUMO_REDIS_URL = "redis://localhost:6379/0"
 ```
 
-### 4) 启动 API 服务
+### 4) 启动服务
 
+**终端 1: 启动 API 服务**
 ```powershell
 python -m src.interfaces.api.main
+# 默认端口: 8000
 ```
 
-API 服务默认运行在 `http://localhost:8000`。
-
-**健康检查：**
-
+**终端 2: 启动 Worker 服务**
 ```powershell
-# 检查服务状态
-Invoke-RestMethod -Uri "http://localhost:8000/v1/health"
-```
-
-### 5) 启动 Worker 服务
-
-```powershell
-# 在新终端中启动 Celery Worker
 celery -A src.interfaces.worker.celery_app worker --loglevel=info
 ```
 
-Worker 启动后会监听 Redis 队列中的任务。
+**终端 3: 启动前端开发服务器**
+```powershell
+cd src/interfaces/admin-web
+npm run dev
+# 默认地址: http://localhost:3000
+```
 
-### 6) 验证安装
+### 5) 验证安装
 
 完成上述步骤后，执行以下验证：
 
-```powershell
-# 1. 确认 Redis 运行
-redis-cli ping
-# 应返回: PONG
-
-# 2. 确认 API 运行
-Invoke-RestMethod -Uri "http://localhost:8000/v1/health"
-# 应返回 JSON: {"status":"healthy"}
-
-# 3. 创建测试任务
-$body = @{ source_file = "test.pdf" } | ConvertTo-Json
-Invoke-RestMethod -Uri "http://localhost:8000/v1/jobs" -Method POST -Body $body -ContentType "application/json"
-```
+1. **API**: 访问 `http://localhost:8000/v1/health` 应返回 `{"status":"healthy"}`
+2. **Frontend**: 访问 `http://localhost:3000` 查看管理后台仪表盘
 
 ---
 
@@ -111,7 +104,10 @@ Invoke-RestMethod -Uri "http://localhost:8000/v1/jobs" -Method POST -Body $body 
 
 - `src/domain/`：领域层
 - `src/application/`：应用层
-- `src/interfaces/`：接口层（API/Worker/AdminWeb）
+- `src/interfaces/`：接口层
+  - `api/`：FastAPI 后端
+  - `worker/`：Celery 任务处理器
+  - `admin-web/`：Next.js 管理后台
 - `src/shared/`：共享基础设施
 
 ---
@@ -120,12 +116,14 @@ Invoke-RestMethod -Uri "http://localhost:8000/v1/jobs" -Method POST -Body $body 
 
 | 场景 | 命令 |
 |------|------|
-| 安装依赖 | `uv pip install -e .` |
+| 安装后端依赖 | `uv pip install -e .` |
+| 安装前端依赖 | `cd src/interfaces/admin-web; npm install` |
 | 启动 API | `python -m src.interfaces.api.main` |
 | 启动 Worker | `celery -A src.interfaces.worker.celery_app worker --loglevel=info` |
+| 启动 Frontend | `cd src/interfaces/admin-web; npm run dev` |
 | 运行测试 | `pytest tests/` |
 | 代码检查 | `pytest tests/ --co -q` |
 
 ---
 
-**最后更新**: 2026-01-16
+**最后更新**: 2026-01-17

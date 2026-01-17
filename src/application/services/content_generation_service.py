@@ -30,6 +30,7 @@ from src.application.services.llm_runtime_service import LLMRuntimeService
 from src.application.services.template_service import TemplateService
 from src.domain.entities.template import Template, TemplateType
 from src.shared.errors import AppError
+from src.shared.constants.prompts import SCOPE_CONTENT_GENERATION_SECTION
 
 
 class ContentGenerationError(AppError):
@@ -219,38 +220,21 @@ class ContentGenerationService:
         generated_content = section.content
         tokens_used = 0
 
-        # 构建提示词
-        prompt_template = f"""你是一个专业的内容生成助手。根据提供的上下文信息，生成符合要求的章节内容。
-
-## 任务要求
-1. 根据上下文信息，生成高质量的章节内容
-2. 内容要准确、专业、有深度
-3. 保持与模板风格一致
-4. 如果上下文信息不足以回答问题，请明确说明
-
-## 章节标题
-{section.title}
-
-## 章节模板
-{{template_content}}
-
-## 上下文信息
-{{context}}
-
-## 生成要求
-请生成完整的章节内容，直接输出最终结果，不要包含任何解释或前缀。
-"""
-
         # 准备上下文
         truncated_context = context[:15000] if len(context) > 15000 else context
 
         # 调用 LLM 生成内容
         try:
-            runnable = self.llm_runtime_service.build_runnable_for_capability("inference")
-            result = runnable.invoke({
-                "template_content": section.content,
-                "context": truncated_context,
-            })
+            runnable = self.llm_runtime_service.build_runnable_for_callsite(
+                SCOPE_CONTENT_GENERATION_SECTION
+            )
+            result = runnable.invoke(
+                {
+                    "title": section.title,
+                    "template_content": section.content,
+                    "context": truncated_context,
+                }
+            )
             generated_content = result if result else section.content
             # 估算 token 使用量
             tokens_used = len(generated_content) // 4

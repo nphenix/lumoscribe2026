@@ -82,6 +82,7 @@ class SourceFileService:
             workspace_id=workspace_id,
             original_filename=file.filename or "unknown.pdf",
             file_hash=file_hash,
+            file_size=len(content),
             storage_path=storage_path,
             status=SourceFileStatus.ACTIVE,
             description=description,
