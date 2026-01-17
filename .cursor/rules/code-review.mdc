@@ -139,6 +139,16 @@ wc -l $(find . -type f -name "*.py")
 | 内存泄漏 | 未释放的资源 | Warning |
 | 不必要的循环 | 可以优化的循环逻辑 | Info |
 
+### 架构与规范
+
+| 问题类型 | 描述 | 严重程度 |
+|---------|------|---------|
+| 目录结构违规 | 不符合 directory-structure.md | Warning |
+| Prompt 硬编码 | 业务代码中包含 Prompt 字符串 | Critical |
+| Prompt 未注册 | 未在 shared/constants/prompts.py 注册 | Error |
+| 依赖管理违规 | 违反 P5 准则 | Warning |
+
+
 ## 输出格式
 
 ### 审查报告模板

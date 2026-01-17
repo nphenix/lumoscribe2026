@@ -99,6 +99,13 @@ description: 项目宪章 - 核心规则（AI助手必须遵循）
 - **删除文件时**：从 `00-目录说明.md` 中移除记录，添加删除日志。
 - 时间戳格式：`YYYY-MM-DD`。
 
+### P11 提示词管理规范
+
+- **禁止硬编码**: 严禁在业务代码中拼接 Prompt 字符串。
+- **Code-First Seed**: 所有 Prompt 必须在 `src/shared/constants/prompts.py` 中定义默认值。
+- **Source of Truth**: 运行时必须优先使用数据库中的配置。
+- 详见 [`docs/guides/prompt-management-standards.md`](docs/guides/prompt-management-standards.md)。
+
 ## 附加约束
 
 - 分层摆放: `src/domain/`、`src/application/`、`src/interfaces/`

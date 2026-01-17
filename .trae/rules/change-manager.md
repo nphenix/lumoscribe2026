@@ -100,6 +100,7 @@ speckit/specs/changes/[kebab-case-变更-id]/change.md
 - [ ] 破坏性变更已标记
 - [ ] 已识别受影响的规格
 - [ ] 已映射受影响的代码区域
+- [ ] **Prompt 管理**: 无硬编码，已注册到 Registry
 - [ ] 实施方案可操作
 - [ ] 审批工作流已定义
 - [ ] 文档全程使用中文

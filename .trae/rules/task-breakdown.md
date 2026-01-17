@@ -103,6 +103,60 @@ speckit/specs/features/[kebab-case-功能名称]/tasks.md
 - [ ] 时间戳格式为 YYYY-MM-DD
 - [ ] 文件路径符合约定
 
+## LLM 集成检查
+
+### 检查条件
+
+生成任务后，检查功能是否需要调用 LLM（满足任一条件即触发）：
+- 任务涉及 LLM Provider、LLM Model、PromptService
+- 任务描述包含"AI"、"生成"、"智能"
+- 任务涉及 prompts.py 或提示词相关
+
+### 触发提示
+
+如果检测到需要 LLM 集成，在输出末尾添加提示：
+
+```
+⚠️ 此功能需要 LLM 集成，请确保：
+
+1. 提示词定义
+   - [ ] 已创建 src/application/services/[module]/prompts.py
+   - [ ] 已定义 SCOPE_[MODULE]_[ACTION] 和 PROMPTS 字典
+   - [ ] 已参考 document_cleaning/prompts.py 格式
+
+2. 注册检查
+   - [ ] 已注册到 src/shared/constants/prompts.py
+
+3. 代码使用
+   - [ ] Service 已注入 PromptService
+   - [ ] 调用使用 prompt_service.get_active_prompt(SCOPE_xxx)
+   - [ ] 使用 .replace() 进行模板渲染
+
+4. 数据库同步
+   - [ ] 已运行 scripts/init-db.py 播种提示词
+
+参考: speckit/specs/prompt-management-standards.md
+```
+
+### 任务示例
+
+如果需要 LLM 集成，添加以下任务到 tasks.md：
+
+```markdown
+### [P1] 创建提示词模块
+
+**描述**: 创建提示词定义文件
+**依赖**: 无
+**相关文件**:
+| 文件 | 用途 |
+|------|------|
+| [prompts.py](src/application/services/[module]/prompts.py) | 提示词定义 |
+
+**验收标准**:
+- [ ] prompts.py 包含 SCOPE 和 PROMPTS 定义
+- [ ] 已注册到 constants/prompts.py
+```
+
 ## 目录说明管理
 
 **创建文件后必须更新00-目录说明.md**：
@@ -167,4 +221,5 @@ speckit/specs/features/[kebab-case-功能名称]/tasks.md
 |------|------|---------|
 | 1.0.0 | 2026-01-12 | 初始版本 |
 | 1.1.0 | 2026-01-12 | 添加统一的 allowed-tools 格式 |
+| 1.2.0 | 2026-01-17 | 添加 LLM 集成检查主动提示 |
 

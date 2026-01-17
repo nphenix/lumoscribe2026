@@ -88,6 +88,42 @@ speckit/specs/features/[kebab-case-功能名称]/spec.md
 3. 添加时间戳和元数据
 4. 保存到正确路径
 
+## LLM 集成检查
+
+### 检查条件
+
+生成规格后，检查功能是否需要调用 LLM（满足任一条件即触发）：
+- 用户故事提到"AI"、"LLM"、"生成"、"分析"
+- 验收场景涉及"文本处理"、"内容创作"
+- 需求描述包含"智能"、"自动化"
+- 技术方案涉及 LLM Provider 或 LLM Model
+
+### 触发提示
+
+如果检测到需要 LLM 集成，在输出末尾添加提示：
+
+```
+⚠️ 此功能需要 LLM 集成，请遵循提示词管理规范：
+
+1. 创建模块 prompts.py
+   路径: src/application/services/[module]/prompts.py
+   模板: 参考 src/application/services/document_cleaning/prompts.py
+
+2. 定义提示词
+   - SCOPE_[MODULE]_[ACTION] = "module:action"
+   - PROMPTS 字典包含 content、description、format
+
+3. 注册到注册表
+   文件: src/shared/constants/prompts.py
+   格式: from src.application.services.[module].prompts import PROMPTS
+
+4. 注入使用
+   - Service __init__ 注入 PromptService
+   - 调用时使用 prompt_service.get_active_prompt(SCOPE_xxx)
+
+参考: speckit/specs/prompt-management-standards.md
+```
+
 ## 质量检查清单
 
 在最终确定规格之前：
@@ -116,4 +152,5 @@ speckit/specs/features/[kebab-case-功能名称]/spec.md
 |------|------|---------|
 | 1.0.0 | 2026-01-12 | 初始版本 |
 | 1.1.0 | 2026-01-12 | 添加统一的 allowed-tools 格式 |
+| 1.2.0 | 2026-01-17 | 添加 LLM 集成检查主动提示 |
 
