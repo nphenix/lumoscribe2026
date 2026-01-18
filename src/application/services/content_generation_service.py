@@ -30,7 +30,10 @@ from src.application.services.llm_runtime_service import LLMRuntimeService
 from src.application.services.template_service import TemplateService
 from src.domain.entities.template import Template, TemplateType
 from src.shared.errors import AppError
-from src.shared.constants.prompts import SCOPE_CONTENT_GENERATION_SECTION
+from src.shared.constants.prompts import (
+    SCOPE_CONTENT_GENERATION_SECTION,
+    SCOPE_OUTLINE_POLISH,
+)
 
 
 class ContentGenerationError(AppError):
@@ -560,3 +563,36 @@ class ContentGenerationService:
             total_time_ms=total_time_ms,
             generated_at=datetime.now(),
         )
+
+    def polish_outline(self, outline: str) -> str:
+        """对用户自定义大纲进行 LLM 润色。
+
+        Args:
+            outline: 原始大纲（Markdown 格式）
+
+        Returns:
+            润色后的大纲（Markdown 格式）
+
+        Raises:
+            ContentGenerationError: 当 LLM 调用失败时
+        """
+        if not outline or not outline.strip():
+            raise ContentGenerationError(
+                message="大纲内容不能为空",
+                code="outline_empty",
+                status_code=400,
+            )
+
+        try:
+            runnable = self.llm_runtime_service.build_runnable_for_callsite(
+                SCOPE_OUTLINE_POLISH
+            )
+            result = runnable.invoke({"outline": outline})
+            polished_outline = result if result else outline
+            return polished_outline.strip()
+        except Exception as e:
+            raise ContentGenerationError(
+                message=f"LLM 润色失败: {str(e)}",
+                code="outline_polish_failed",
+                details={"original_outline": outline[:200]},  # 只记录前200字符
+            )

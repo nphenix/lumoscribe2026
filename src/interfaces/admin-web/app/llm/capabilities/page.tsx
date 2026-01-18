@@ -1,6 +1,6 @@
 'use client';
 
-import { useLLMCapabilities, useUpdateLLMCapability, useLLMModels, LLMCapability } from '@/hooks/use-llm';
+import { useLLMCapabilities, useUpdateLLMCapability, useLLMProviders, LLMCapability } from '@/hooks/use-llm';
 import {
   Table,
   TableBody,
@@ -18,7 +18,7 @@ import { toast } from 'sonner';
 
 export default function CapabilitiesPage() {
   const { data: capabilities, isLoading } = useLLMCapabilities();
-  const { data: models } = useLLMModels();
+  const { data: providers } = useLLMProviders();
   const updateMutation = useUpdateLLMCapability();
 
   const handleUpsert = async (patch: LLMCapability) => {
@@ -26,7 +26,7 @@ export default function CapabilitiesPage() {
       await updateMutation.mutateAsync({
         id: patch.id,
         capability: patch.capability,
-        model_id: patch.model_id,
+        provider_id: patch.provider_id,
         priority: patch.priority,
         enabled: patch.enabled,
         description: patch.description ?? null,
@@ -55,7 +55,7 @@ export default function CapabilitiesPage() {
               <TableRow>
                 <TableHead>能力名称</TableHead>
                 <TableHead>描述</TableHead>
-                <TableHead>默认模型</TableHead>
+                <TableHead>默认 Provider</TableHead>
                 <TableHead>优先级</TableHead>
                 <TableHead>启用</TableHead>
               </TableRow>
@@ -70,16 +70,16 @@ export default function CapabilitiesPage() {
                   <TableCell className="text-gray-500">{cap.description}</TableCell>
                   <TableCell className="w-[300px]">
                     <Select
-                      value={cap.model_id}
-                      onValueChange={(value) => handleUpsert({ ...cap, model_id: value })}
+                      value={cap.provider_id}
+                      onValueChange={(value) => handleUpsert({ ...cap, provider_id: value })}
                     >
                       <SelectTrigger>
-                        <SelectValue placeholder="选择模型" />
+                        <SelectValue placeholder="选择 Provider" />
                       </SelectTrigger>
                       <SelectContent>
-                        {models?.map((m) => (
-                          <SelectItem key={m.id} value={m.id}>
-                            {m.name}
+                        {providers?.filter(p => p.enabled).map((p) => (
+                          <SelectItem key={p.id} value={p.id}>
+                            {p.name} ({p.provider_type})
                           </SelectItem>
                         ))}
                       </SelectContent>

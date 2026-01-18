@@ -23,8 +23,11 @@ class LLMProvider(Base):
     __tablename__ = "llm_providers"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)  # UUID
+    key: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True
+    )  # Provider 唯一标识（用于 seed / 引用）
     name: Mapped[str] = mapped_column(
-        String(128), nullable=False, unique=True, index=True
+        String(128), nullable=False, index=True
     )  # Provider 名称
     provider_type: Mapped[str] = mapped_column(
         String(64), nullable=False

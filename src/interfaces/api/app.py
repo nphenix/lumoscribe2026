@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -51,7 +53,7 @@ def _seed_llm_callsites(session_factory) -> None:
                     id=str(uuid4()),
                     key=key,
                     expected_model_kind=expected_model_kind,
-                    model_id=None,
+                    provider_id=None,
                     config_json=None,
                     prompt_scope=prompt_scope,
                     enabled=True,
@@ -75,9 +77,16 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Lumoscribe2026 API", version="0.1.0")
 
     # 配置 CORS
+    # 注意：`allow_credentials=True` 时，浏览器不接受 `Access-Control-Allow-Origin: *`。
+    # 因此默认仅放行本地开发前端（可用环境变量覆盖）。
+    raw_origins = os.getenv(
+        "LUMO_CORS_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000",
+    )
+    allow_origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # 开发环境允许所有来源，生产环境应限制为前端域名
+        allow_origins=allow_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -142,7 +151,7 @@ def create_app() -> FastAPI:
                 code=ERROR_INTERNAL,
                 message="internal server error",
                 request_id=get_request_id(),
-                details={"errors": exc.errors()},
+                details={"error": str(exc), "type": exc.__class__.__name__},
             ),
         )
 

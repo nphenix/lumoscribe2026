@@ -7,7 +7,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from src.application.repositories.llm_capability_repository import LLMCapabilityRepository
-from src.application.repositories.llm_model_repository import LLMModelRepository
+from src.application.repositories.llm_provider_repository import LLMProviderRepository
 from src.domain.entities.llm_capability import LLMCapability
 
 
@@ -17,15 +17,15 @@ class LLMCapabilityService:
     def __init__(
         self,
         repository: LLMCapabilityRepository,
-        model_repository: LLMModelRepository,
+        provider_repository: LLMProviderRepository,
     ):
         self.repository = repository
-        self.model_repository = model_repository
+        self.provider_repository = provider_repository
 
     def list_capabilities(
         self,
         capability: str | None = None,
-        model_id: str | None = None,
+        provider_id: str | None = None,
         enabled: bool | None = None,
         limit: int = 100,
         offset: int = 0,
@@ -33,14 +33,14 @@ class LLMCapabilityService:
         """列出能力映射。"""
         items = self.repository.list(
             capability=capability,
-            model_id=model_id,
+            provider_id=provider_id,
             enabled=enabled,
             limit=limit,
             offset=offset,
         )
         total = self.repository.count(
             capability=capability,
-            model_id=model_id,
+            provider_id=provider_id,
             enabled=enabled,
         )
         return items, total
@@ -50,7 +50,7 @@ class LLMCapabilityService:
         *,
         capability_id: str | None,
         capability: str,
-        model_id: str,
+        provider_id: str,
         priority: int,
         enabled: bool,
         description: str | None,
@@ -61,9 +61,11 @@ class LLMCapabilityService:
         if priority < 0:
             raise HTTPException(status_code=400, detail="priority 不能为负数")
 
-        model = self.model_repository.get_by_id(model_id)
-        if model is None:
-            raise HTTPException(status_code=404, detail="模型不存在")
+        provider = self.provider_repository.get_by_id(provider_id)
+        if provider is None:
+            raise HTTPException(status_code=404, detail="Provider 不存在")
+        if not provider.enabled:
+            raise HTTPException(status_code=400, detail="Provider 已禁用")
 
         target = None
         if capability_id is not None:
@@ -72,13 +74,13 @@ class LLMCapabilityService:
                 raise HTTPException(status_code=404, detail="能力映射不存在")
 
         if target is None:
-            target = self.repository.get_by_capability_model(capability, model_id)
+            target = self.repository.get_by_capability_provider(capability, provider_id)
 
         if target is None:
             new_capability = LLMCapability(
                 id=str(uuid4()),
                 capability=capability,
-                model_id=model_id,
+                provider_id=provider_id,
                 priority=priority,
                 enabled=enabled,
                 description=description,
@@ -86,7 +88,7 @@ class LLMCapabilityService:
             return self.repository.create(new_capability)
 
         target.capability = capability
-        target.model_id = model_id
+        target.provider_id = provider_id
         target.priority = priority
         target.enabled = enabled
         target.description = description

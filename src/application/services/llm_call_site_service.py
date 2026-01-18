@@ -8,7 +8,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from src.application.repositories.llm_call_site_repository import LLMCallSiteRepository
-from src.application.repositories.llm_model_repository import LLMModelRepository
+from src.application.repositories.llm_provider_repository import LLMProviderRepository
 from src.domain.entities.llm_call_site import LLMCallSite
 
 
@@ -21,10 +21,10 @@ class LLMCallSiteService:
     def __init__(
         self,
         repository: LLMCallSiteRepository,
-        model_repository: LLMModelRepository,
+        provider_repository: LLMProviderRepository,
     ):
         self.repository = repository
-        self.model_repository = model_repository
+        self.provider_repository = provider_repository
 
     def list_call_sites(
         self,
@@ -57,7 +57,7 @@ class LLMCallSiteService:
         *,
         key: str,
         expected_model_kind: str,
-        model_id: str | None,
+        provider_id: str | None,
         config: dict | None,
         prompt_scope: str | None,
         enabled: bool,
@@ -78,15 +78,12 @@ class LLMCallSiteService:
         if existing is not None:
             raise HTTPException(status_code=409, detail="CallSite key 已存在")
 
-        if model_id is not None:
-            model = self.model_repository.get_by_id(model_id)
-            if model is None:
-                raise HTTPException(status_code=404, detail="绑定的模型不存在")
-            if model.model_kind != expected_model_kind:
-                raise HTTPException(
-                    status_code=400,
-                    detail="model_kind 与 expected_model_kind 不一致",
-                )
+        if provider_id is not None:
+            provider = self.provider_repository.get_by_id(provider_id)
+            if provider is None:
+                raise HTTPException(status_code=404, detail="绑定的 Provider 不存在")
+            if not provider.enabled:
+                raise HTTPException(status_code=400, detail="绑定的 Provider 已禁用")
 
         config_json = None
         if config is not None:
@@ -99,7 +96,7 @@ class LLMCallSiteService:
             id=str(uuid4()),
             key=key,
             expected_model_kind=expected_model_kind,
-            model_id=model_id,
+            provider_id=provider_id,
             config_json=config_json,
             prompt_scope=prompt_scope,
             enabled=enabled,
@@ -111,7 +108,7 @@ class LLMCallSiteService:
         self,
         *,
         callsite_id: str,
-        model_id: str | None,
+        provider_id: str | None,
         config: dict | None,
         prompt_scope: str | None,
         enabled: bool | None,
@@ -121,16 +118,13 @@ class LLMCallSiteService:
         if target is None:
             return None
 
-        if model_id is not None:
-            model = self.model_repository.get_by_id(model_id)
-            if model is None:
-                raise HTTPException(status_code=404, detail="绑定的模型不存在")
-            if model.model_kind != target.expected_model_kind:
-                raise HTTPException(
-                    status_code=400,
-                    detail="model_kind 与 callsite.expected_model_kind 不一致",
-                )
-            target.model_id = model_id
+        if provider_id is not None:
+            provider = self.provider_repository.get_by_id(provider_id)
+            if provider is None:
+                raise HTTPException(status_code=404, detail="绑定的 Provider 不存在")
+            if not provider.enabled:
+                raise HTTPException(status_code=400, detail="绑定的 Provider 已禁用")
+            target.provider_id = provider_id
 
         if config is not None:
             try:

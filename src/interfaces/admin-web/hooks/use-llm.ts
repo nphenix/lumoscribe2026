@@ -5,6 +5,7 @@ import api from '@/lib/api';
 
 export interface LLMProvider {
   id: string;
+  key: string;
   name: string;
   provider_type: string;
   base_url?: string | null;
@@ -17,6 +18,7 @@ export interface LLMProvider {
 }
 
 export interface LLMProviderCreate {
+  key?: string | null;
   name: string;
   provider_type: string;
   base_url?: string | null;
@@ -27,11 +29,23 @@ export interface LLMProviderCreate {
   description?: string | null;
 }
 
+export interface LLMProviderUpdate {
+  key?: string | null;
+  name?: string | null;
+  provider_type?: string | null;
+  base_url?: string | null;
+  api_key?: string | null;
+  api_key_env?: string | null;
+  config?: Record<string, any> | null;
+  enabled?: boolean | null;
+  description?: string | null;
+}
+
 export function useLLMProviders() {
   return useQuery<LLMProvider[]>({
     queryKey: ['llm-providers'],
     queryFn: async () => {
-      const res = await api.get('/llm/providers');
+      const res = await api.get('/llm/providers', { params: { limit: 200, offset: 0 } });
       return res.data.items || [];
     },
   });
@@ -42,6 +56,19 @@ export function useCreateLLMProvider() {
   return useMutation({
     mutationFn: async (data: LLMProviderCreate) => {
       const res = await api.post('/llm/providers', data);
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['llm-providers'] });
+    },
+  });
+}
+
+export function useUpdateLLMProvider() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: { id: string; patch: LLMProviderUpdate }) => {
+      const res = await api.patch(`/llm/providers/${data.id}`, data.patch);
       return res.data;
     },
     onSuccess: () => {
@@ -62,70 +89,12 @@ export function useDeleteLLMProvider() {
   });
 }
 
-// ================= Models =================
-
-export interface LLMModel {
-  id: string;
-  provider_id: string;
-  name: string;
-  model_kind: string;
-  config?: Record<string, any> | null;
-  enabled: boolean;
-  description?: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface LLMModelCreate {
-  provider_id: string;
-  name: string;
-  model_kind: string;
-  config?: Record<string, any> | null;
-  enabled?: boolean;
-  description?: string | null;
-}
-
-export function useLLMModels() {
-  return useQuery<LLMModel[]>({
-    queryKey: ['llm-models'],
-    queryFn: async () => {
-      const res = await api.get('/llm/models');
-      return res.data.items || [];
-    },
-  });
-}
-
-export function useCreateLLMModel() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (data: LLMModelCreate) => {
-      const res = await api.post('/llm/models', data);
-      return res.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['llm-models'] });
-    },
-  });
-}
-
-export function useDeleteLLMModel() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (id: string) => {
-      await api.delete(`/llm/models/${id}`);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['llm-models'] });
-    },
-  });
-}
-
 // ================= Capabilities (Mappings) =================
 
 export interface LLMCapability {
   id: string;
   capability: string;
-  model_id: string;
+  provider_id: string;
   priority: number;
   enabled: boolean;
   description?: string | null;
@@ -136,7 +105,7 @@ export interface LLMCapability {
 export interface LLMCapabilityUpsertItem {
   id?: string | null;
   capability: string;
-  model_id: string;
+  provider_id: string;
   priority?: number;
   enabled?: boolean;
   description?: string | null;
@@ -146,7 +115,7 @@ export function useLLMCapabilities() {
   return useQuery<LLMCapability[]>({
     queryKey: ['llm-capabilities'],
     queryFn: async () => {
-      const res = await api.get('/llm/capabilities');
+      const res = await api.get('/llm/capabilities', { params: { limit: 500, offset: 0 } });
       return res.data.items || [];
     },
   });
@@ -172,7 +141,7 @@ export interface LLMCallSite {
   id: string;
   key: string;
   expected_model_kind: string;
-  model_id?: string | null;
+  provider_id?: string | null;
   config?: Record<string, any> | null;
   prompt_scope?: string | null;
   enabled: boolean;
@@ -184,7 +153,7 @@ export interface LLMCallSite {
 export interface LLMCallSiteCreate {
   key: string;
   expected_model_kind: string;
-  model_id?: string | null;
+  provider_id?: string | null;
   config?: Record<string, any> | null;
   prompt_scope?: string | null;
   enabled?: boolean;
@@ -192,7 +161,7 @@ export interface LLMCallSiteCreate {
 }
 
 export interface LLMCallSiteUpdate {
-  model_id?: string | null;
+  provider_id?: string | null;
   config?: Record<string, any> | null;
   prompt_scope?: string | null;
   enabled?: boolean;
@@ -208,7 +177,9 @@ export function useLLMCallSites(params?: {
   return useQuery<LLMCallSite[]>({
     queryKey: ['llm-call-sites', params || {}],
     queryFn: async () => {
-      const res = await api.get('/llm/call-sites', { params });
+      const res = await api.get('/llm/call-sites', {
+        params: { limit: 500, offset: 0, ...(params || {}) },
+      });
       return res.data.items || [];
     },
   });

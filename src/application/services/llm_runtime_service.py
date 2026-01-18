@@ -26,12 +26,10 @@ from langchain_community.embeddings import LlamaCppEmbeddings
 
 from src.application.repositories.llm_capability_repository import LLMCapabilityRepository
 from src.application.repositories.llm_call_site_repository import LLMCallSiteRepository
-from src.application.repositories.llm_model_repository import LLMModelRepository
 from src.application.repositories.llm_provider_repository import LLMProviderRepository
 from src.application.repositories.prompt_repository import PromptRepository
 from src.domain.entities.llm_capability import LLMCapability
 from src.domain.entities.llm_call_site import LLMCallSite
-from src.domain.entities.llm_model import LLMModel
 from src.domain.entities.llm_provider import LLMProvider
 from src.domain.entities.prompt import Prompt
 from src.shared.errors import AppError
@@ -152,6 +150,71 @@ class FlagEmbeddingReranker(LLM):
         return response.json().get("embeddings", [])
 
 
+# ============== FlagEmbedding 本地 Reranker 封装 ==============
+
+class FlagEmbeddingLocalReranker:
+    """FlagEmbedding 本地 Reranker 封装（无需远程服务）。
+
+    依赖：FlagEmbedding（已在项目依赖中）。
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        use_fp16: bool = True,
+        device: str = "cpu",
+        trust_remote_code: bool = True,
+        batch_size: int = 32,
+    ):
+        self.model_name = model_name
+        self.use_fp16 = use_fp16
+        self.device = device
+        self.trust_remote_code = trust_remote_code
+        self.batch_size = batch_size
+        self._model = None
+
+    def _load(self):
+        try:
+            from FlagEmbedding import FlagReranker
+        except ImportError as exc:
+            raise AppError(
+                code="flagembedding_not_installed",
+                message="请安装 FlagEmbedding: pip install FlagEmbedding",
+                status_code=400,
+            ) from exc
+
+        # FlagReranker 支持 device/use_fp16/trust_remote_code
+        self._model = FlagReranker(
+            self.model_name,
+            use_fp16=self.use_fp16,
+            device=self.device,
+            trust_remote_code=self.trust_remote_code,
+        )
+
+    def rerank(
+        self, documents: list[str], query: str, top_n: int | None = None
+    ) -> list[dict]:
+        if self._model is None:
+            self._load()
+
+        pairs = [[query, doc] for doc in documents]
+        # FlagReranker.compute_score 返回 list[float]（或 numpy array）
+        scores = self._model.compute_score(pairs, batch_size=self.batch_size)
+        try:
+            scores_list = list(scores)
+        except TypeError:
+            scores_list = [float(scores)]
+
+        results = [
+            {"index": i, "text": documents[i], "score": float(scores_list[i])}
+            for i in range(len(documents))
+        ]
+        results.sort(key=lambda x: x["score"], reverse=True)
+        if top_n is not None:
+            return results[: max(0, int(top_n))]
+        return results
+
+
 # ============== FlagEmbedding Embeddings 封装 ==============
 
 class FlagEmbeddingEmbeddings:
@@ -265,13 +328,11 @@ class LLMRuntimeService:
     def __init__(
         self,
         provider_repository: LLMProviderRepository,
-        model_repository: LLMModelRepository,
         capability_repository: LLMCapabilityRepository,
         callsite_repository: LLMCallSiteRepository,
         prompt_repository: PromptRepository,
     ):
         self.provider_repository = provider_repository
-        self.model_repository = model_repository
         self.capability_repository = capability_repository
         self.callsite_repository = callsite_repository
         self.prompt_repository = prompt_repository
@@ -287,27 +348,27 @@ class LLMRuntimeService:
         Returns:
             LangChain Runnable 对象
         """
-        provider, model, callsite = self._resolve_callsite_provider_model(callsite_key)
+        provider, callsite = self._resolve_callsite_provider(callsite_key)
         callsite_config = self._parse_json(callsite.config_json)
-        model_kind = model.model_kind
+        model_kind = callsite.expected_model_kind
 
         if model_kind == self.MODEL_KIND_CHAT:
             scope = callsite.prompt_scope or callsite.key
             prompt = self._get_active_prompt(scope)
-            llm = self._build_chat_model(provider, model, callsite_config)
+            llm = self._build_chat_model(provider, callsite_config)
             prompt_template = self._build_prompt(prompt)
             return prompt_template | llm | StrOutputParser()
 
         elif model_kind == self.MODEL_KIND_EMBEDDING:
-            return self._build_embedding_model(provider, model, callsite_config)
+            return self._build_embedding_model(provider, callsite_config)
 
         elif model_kind == self.MODEL_KIND_RERANK:
-            return self._build_rerank_model(provider, model, callsite_config)
+            return self._build_rerank_model(provider, callsite_config)
 
         elif model_kind == self.MODEL_KIND_MULTIMODAL:
             scope = callsite.prompt_scope or callsite.key
             prompt = self._get_active_prompt(scope)
-            llm = self._build_multimodal_model(provider, model, callsite_config)
+            llm = self._build_multimodal_model(provider, callsite_config)
             prompt_template = self._build_prompt(prompt)
             return prompt_template | llm
 
@@ -333,33 +394,14 @@ class LLMRuntimeService:
         if callsite is not None:
             return self.build_runnable_for_callsite(capability)
 
-        provider, model, _mapping = self._resolve_provider_model(capability)
-        model_kind = model.model_kind
-
-        if model_kind == self.MODEL_KIND_CHAT:
-            prompt = self._get_active_prompt(capability)
-            llm = self._build_chat_model(provider, model)
-            prompt_template = self._build_prompt(prompt)
-            return prompt_template | llm | StrOutputParser()
-
-        elif model_kind == self.MODEL_KIND_EMBEDDING:
-            return self._build_embedding_model(provider, model)
-
-        elif model_kind == self.MODEL_KIND_RERANK:
-            return self._build_rerank_model(provider, model)
-
-        elif model_kind == self.MODEL_KIND_MULTIMODAL:
-            prompt = self._get_active_prompt(capability)
-            llm = self._build_multimodal_model(provider, model)
-            prompt_template = self._build_prompt(prompt)
-            return prompt_template | llm
-
-        else:
-            raise AppError(
-                code="unsupported_model_kind",
-                message=f"不支持的模型类型: {model_kind}",
-                status_code=400,
-            )
+        # 从 capability 映射获取 provider，但需要确定模型类型
+        # 由于 capability 不再绑定 model，我们需要从第一个可用的 provider 获取
+        # 或者要求 capability 必须通过 callsite 配置
+        raise AppError(
+            code="capability_requires_callsite",
+            message=f"能力 '{capability}' 必须通过 callsite 配置，请创建对应的调用点",
+            status_code=400,
+        )
 
     def get_model_for_capability(
         self, capability: str
@@ -432,26 +474,40 @@ class LLMRuntimeService:
     def _build_chat_model(
         self,
         provider: LLMProvider,
-        model: LLMModel,
         callsite_config: dict | None = None,
     ) -> ChatProtocol:
         """构建对话模型。"""
         provider_config = self._parse_json(provider.config_json)
-        model_config = self._parse_json(model.config_json)
-        config = {**provider_config, **model_config, **(callsite_config or {})}
+        config = {**provider_config, **(callsite_config or {})}
+        
+        # 模型名称从 Provider config 中获取，如果没有则使用 Provider name
+        default_model_name = config.get("model") or config.get("model_name") or provider.name
 
         extra_body = config.pop("extra_body", None)
         model_kwargs = config.pop("model_kwargs", None)
+        # 常用参数（Provider/Model/CallSite 均可覆盖）
+        # - OpenAI Compatible: temperature/max_tokens/timeout/streaming/model
+        # - Ollama: temperature/max_tokens(timeout)/model(ollama_model)
         temperature = config.pop("temperature", None)
         max_tokens = config.pop("max_tokens", None)
+        timeout_seconds = config.pop("timeout_seconds", None)
+        if timeout_seconds is None:
+            # 兼容其他常见命名
+            timeout_seconds = config.pop("timeout", None)
+        streaming = config.pop("stream", None)
+        if streaming is None:
+            streaming = config.pop("streaming", None)
+        model_override = config.pop("model", None)
+        ollama_model = config.pop("ollama_model", None)  # 仅对 provider_type=ollama 生效
 
         if config:
             model_kwargs = {**(model_kwargs or {}), **config}
 
         if provider.provider_type == "openai_compatible":
             api_key = self._resolve_api_key(provider)
+            model_name = model_override or default_model_name
             params: dict[str, Any] = {
-                "model": model.name,
+                "model": model_name,
                 "api_key": api_key,
             }
             if provider.base_url:
@@ -460,6 +516,21 @@ class LLMRuntimeService:
                 params["temperature"] = temperature
             if max_tokens is not None:
                 params["max_tokens"] = max_tokens
+            if timeout_seconds is not None:
+                # langchain-openai: ChatOpenAI(timeout=...)
+                params["timeout"] = timeout_seconds
+            if streaming is not None:
+                # langchain-openai: ChatOpenAI(streaming=...)
+                if isinstance(streaming, str):
+                    params["streaming"] = streaming.strip().lower() in {
+                        "1",
+                        "true",
+                        "yes",
+                        "y",
+                        "on",
+                    }
+                else:
+                    params["streaming"] = bool(streaming)
             if model_kwargs:
                 params["model_kwargs"] = model_kwargs
             if extra_body:
@@ -467,20 +538,23 @@ class LLMRuntimeService:
             return ChatOpenAI(**params)
 
         if provider.provider_type == "ollama":
-            params = {"model": model.name}
+            model_name = ollama_model or model_override or default_model_name
+            params: dict[str, Any] = {"model": model_name}
             if provider.base_url:
                 params["base_url"] = provider.base_url
             if temperature is not None:
                 params["temperature"] = temperature
             if max_tokens is not None:
                 params["num_predict"] = max_tokens
+            if timeout_seconds is not None:
+                params["timeout"] = timeout_seconds
             if model_kwargs:
                 params.update(model_kwargs)
             return ChatOllama(**params)
 
         # LlamaCpp (本地 GGUF 模型，支持 GPU)
         if provider.provider_type == "llamacpp":
-            model_path = model.name  # model 字段存储模型文件路径
+            model_path = model_override or default_model_name  # 模型文件路径
             params: dict[str, Any] = {
                 "model_path": model_path,
                 "n_gpu_layers": config.pop("n_gpu_layers", -1),  # -1 表示全部层到 GPU
@@ -504,7 +578,6 @@ class LLMRuntimeService:
     def _build_embedding_model(
         self,
         provider: LLMProvider,
-        model: LLMModel,
         callsite_config: dict | None = None,
     ) -> EmbeddingProtocol:
         """构建向量模型。
@@ -515,14 +588,20 @@ class LLMRuntimeService:
         - HuggingFace Embeddings
         """
         provider_config = self._parse_json(provider.config_json)
-        model_config = self._parse_json(model.config_json)
-        config = {**provider_config, **model_config, **(callsite_config or {})}
-
-        model_name = model.name
+        config = {**provider_config, **(callsite_config or {})}
+        
+        # 模型名称从 Provider config 中获取，如果没有则使用 Provider name
+        model_name = config.get("model") or config.get("model_name") or provider.name
 
         # FlagEmbedding
         if provider.provider_type == "flagembedding":
-            host = provider.base_url or config.pop("host", None)
+            # 默认本地模式；只有显式声明 remote 时才走远程 API
+            use_remote = config.pop("remote", None)
+            host = config.pop("host", None)
+            if use_remote is None:
+                use_remote = bool(host)
+            if use_remote and not host:
+                host = provider.base_url
             use_fp16 = config.pop("use_fp16", True)
             device = config.pop("device", "cpu")
 
@@ -571,7 +650,7 @@ class LLMRuntimeService:
 
         # LlamaCpp Embeddings (本地 GGUF 模型，支持 GPU)
         if provider.provider_type == "llamacpp":
-            model_path = model.name  # model 字段存储模型文件路径
+            model_path = model_name  # 模型文件路径
             return LlamaCppEmbeddings(
                 model_path=model_path,
                 n_gpu_layers=config.pop("n_gpu_layers", -1),  # -1 表示全部层到 GPU
@@ -587,45 +666,53 @@ class LLMRuntimeService:
     def _build_rerank_model(
         self,
         provider: LLMProvider,
-        model: LLMModel,
         callsite_config: dict | None = None,
     ) -> RerankProtocol:
         """构建重排序模型。
 
         支持:
-        - FlagEmbedding Reranker 远程 API
-        - Cohere Rerank
+        - FlagEmbedding Reranker（默认本地；可选远程 API）
         """
         provider_config = self._parse_json(provider.config_json)
-        model_config = self._parse_json(model.config_json)
-        config = {**provider_config, **model_config, **(callsite_config or {})}
+        config = {**provider_config, **(callsite_config or {})}
+        
+        # 模型名称从 Provider config 中获取，如果没有则使用 Provider name
+        model_name = config.get("model") or config.get("model_name") or provider.name
 
-        model_name = model.name
-
-        # FlagEmbedding Reranker (远程 API)
+        # FlagEmbedding Reranker（默认本地）
         if provider.provider_type == "flagembedding":
-            host = provider.base_url or config.pop("host", "http://localhost:8000")
-            use_gpu = config.pop("use_gpu", False)
+            use_remote = config.pop("remote", None)
+            host = config.pop("host", None)
+            if use_remote is None:
+                use_remote = bool(host)
+
+            # 远程模式：兼容历史实现（FlagEmbedding API Server）
+            if use_remote:
+                if not host:
+                    host = provider.base_url or "http://localhost:8000"
+                use_gpu = config.pop("use_gpu", False)
+                batch_size = config.pop("batch_size", 64)
+                max_length = config.pop("max_length", 512)
+
+                return FlagEmbeddingReranker(
+                    model_name=model_name,
+                    host=host,
+                    use_gpu=use_gpu,
+                    batch_size=batch_size,
+                    max_length=max_length,
+                )
+
+            # 本地模式：直接加载 reranker 模型
+            use_fp16 = config.pop("use_fp16", True)
+            device = config.pop("device", "cpu")
+            trust_remote_code = config.pop("trust_remote_code", True)
             batch_size = config.pop("batch_size", 64)
-            max_length = config.pop("max_length", 512)
-
-            return FlagEmbeddingReranker(
+            return FlagEmbeddingLocalReranker(
                 model_name=model_name,
-                host=host,
-                use_gpu=use_gpu,
+                use_fp16=use_fp16,
+                device=device,
+                trust_remote_code=trust_remote_code,
                 batch_size=batch_size,
-                max_length=max_length,
-            )
-
-        # Cohere Rerank
-        if provider.provider_type == "cohere":
-            api_key = self._resolve_api_key(provider)
-            from langchain_cohere import CohereRerank
-
-            return CohereRerank(
-                model=model_name,
-                api_key=api_key,
-                **config,
             )
 
         raise AppError(
@@ -637,7 +724,6 @@ class LLMRuntimeService:
     def _build_multimodal_model(
         self,
         provider: LLMProvider,
-        model: LLMModel,
         callsite_config: dict | None = None,
     ) -> ChatProtocol:
         """构建多模态模型。
@@ -648,7 +734,7 @@ class LLMRuntimeService:
         """
         # 多模态模型目前复用 chat 模型接口
         # 通过 config 中的 stop_actions 等参数区分
-        return self._build_chat_model(provider, model, callsite_config)
+        return self._build_chat_model(provider, callsite_config)
 
     def _build_prompt(self, prompt: Prompt) -> ChatPromptTemplate:
         """构建 Prompt 模板。"""
@@ -677,10 +763,10 @@ class LLMRuntimeService:
 
     # ============== 辅助方法 ==============
 
-    def _resolve_callsite_provider_model(
+    def _resolve_callsite_provider(
         self, callsite_key: str
-    ) -> tuple[LLMProvider, LLMModel, LLMCallSite]:
-        """解析 callsite -> provider/model。"""
+    ) -> tuple[LLMProvider, LLMCallSite]:
+        """解析 callsite -> provider。"""
         callsite = self.callsite_repository.get_by_key(callsite_key)
         if callsite is None:
             raise AppError(
@@ -696,37 +782,21 @@ class LLMRuntimeService:
                 status_code=400,
                 details={"callsite_key": callsite_key},
             )
-        if not callsite.model_id:
+        if not callsite.provider_id:
             raise AppError(
                 code="llm_callsite_unbound",
-                message=f"调用点未绑定模型: {callsite_key}",
+                message=f"调用点未绑定 Provider: {callsite_key}",
                 status_code=409,
                 details={"callsite_key": callsite_key},
             )
 
-        model = self.model_repository.get_by_id(callsite.model_id)
-        if model is None:
-            raise AppError(
-                code="llm_callsite_model_not_found",
-                message="调用点绑定的模型不存在",
-                status_code=404,
-                details={"callsite_key": callsite_key, "model_id": callsite.model_id},
-            )
-        if not model.enabled:
-            raise AppError(
-                code="llm_callsite_model_disabled",
-                message="调用点绑定的模型已禁用",
-                status_code=400,
-                details={"callsite_key": callsite_key, "model_id": model.id},
-            )
-
-        provider = self.provider_repository.get_by_id(model.provider_id)
+        provider = self.provider_repository.get_by_id(callsite.provider_id)
         if provider is None:
             raise AppError(
                 code="llm_callsite_provider_not_found",
                 message="调用点绑定的 Provider 不存在",
                 status_code=404,
-                details={"callsite_key": callsite_key, "provider_id": model.provider_id},
+                details={"callsite_key": callsite_key, "provider_id": callsite.provider_id},
             )
         if not provider.enabled:
             raise AppError(
@@ -736,24 +806,12 @@ class LLMRuntimeService:
                 details={"callsite_key": callsite_key, "provider_id": provider.id},
             )
 
-        if model.model_kind != callsite.expected_model_kind:
-            raise AppError(
-                code="llm_callsite_kind_mismatch",
-                message="调用点期望类型与模型类型不一致",
-                status_code=400,
-                details={
-                    "callsite_key": callsite_key,
-                    "expected_model_kind": callsite.expected_model_kind,
-                    "model_kind": model.model_kind,
-                },
-            )
+        return provider, callsite
 
-        return provider, model, callsite
-
-    def _resolve_provider_model(
+    def _resolve_provider_from_capability(
         self, capability: str
-    ) -> tuple[LLMProvider, LLMModel, LLMCapability]:
-        """解析 provider、model、capability 映射。"""
+    ) -> tuple[LLMProvider, LLMCapability]:
+        """解析 capability -> provider 映射。"""
         mappings = self.capability_repository.list(
             capability=capability,
             enabled=True,
@@ -761,13 +819,10 @@ class LLMRuntimeService:
             offset=0,
         )
         for mapping in mappings:
-            model = self.model_repository.get_by_id(mapping.model_id)
-            if model is None or not model.enabled:
-                continue
-            provider = self.provider_repository.get_by_id(model.provider_id)
+            provider = self.provider_repository.get_by_id(mapping.provider_id)
             if provider is None or not provider.enabled:
                 continue
-            return provider, model, mapping
+            return provider, mapping
 
         raise AppError(
             code="llm_capability_not_found",

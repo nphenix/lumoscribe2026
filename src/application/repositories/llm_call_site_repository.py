@@ -52,9 +52,9 @@ class LLMCallSiteRepository:
             query = query.filter(LLMCallSite.enabled == enabled)
 
         if bound is True:
-            query = query.filter(LLMCallSite.model_id.is_not(None))
+            query = query.filter(LLMCallSite.provider_id.is_not(None))
         elif bound is False:
-            query = query.filter(LLMCallSite.model_id.is_(None))
+            query = query.filter(LLMCallSite.provider_id.is_(None))
 
         return query.order_by(LLMCallSite.updated_at.desc()).offset(offset).limit(limit).all()
 
@@ -79,9 +79,9 @@ class LLMCallSiteRepository:
             query = query.filter(LLMCallSite.enabled == enabled)
 
         if bound is True:
-            query = query.filter(LLMCallSite.model_id.is_not(None))
+            query = query.filter(LLMCallSite.provider_id.is_not(None))
         elif bound is False:
-            query = query.filter(LLMCallSite.model_id.is_(None))
+            query = query.filter(LLMCallSite.provider_id.is_(None))
 
         return query.count()
 

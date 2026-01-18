@@ -1,9 +1,9 @@
 """LLM 调用点（Callsite）实体。
 
-用于把“某个业务调用点”绑定到具体模型与参数覆盖配置：
+用于把"某个业务调用点"绑定到具体 Provider 与参数覆盖配置：
 - key: 稳定的调用点标识（建议 module:action）
-- expected_model_kind: 期望的模型类型（chat/embedding/rerank/multimodal）
-- model_id: 绑定的模型（可为空，表示已注册但未配置）
+- expected_model_kind: 期望的模型类型（chat/embedding/rerank/multimodal/ocr），运行时根据此字段构建对应类型的模型
+- provider_id: 绑定的 Provider（可为空，表示已注册但未配置）
 - config_json: 调用点级参数覆盖（优先级最高）
 - prompt_scope: chat/multimodal 时使用的提示词 scope（为空则使用 key）
 """
@@ -30,10 +30,10 @@ class LLMCallSite(Base):
 
     expected_model_kind: Mapped[str] = mapped_column(
         String(64), nullable=False
-    )  # chat/embedding/rerank/multimodal
+    )  # chat/embedding/rerank/multimodal/ocr
 
-    model_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("llm_models.id"), nullable=True, index=True
+    provider_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("llm_providers.id"), nullable=True, index=True
     )
 
     config_json: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -51,4 +51,3 @@ class LLMCallSite(Base):
         default=datetime.utcnow,
         onupdate=datetime.utcnow,
     )
-

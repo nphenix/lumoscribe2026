@@ -15,6 +15,7 @@ async def test_llm_provider_model_capability_flow(api_client: httpx.AsyncClient)
     resp = await api_client.post(
         "/v1/llm/providers",
         json={
+            "key": "openai-local",
             "name": "openai-local",
             "provider_type": "openai_compatible",
             "base_url": "http://localhost:8001/v1",
@@ -63,11 +64,53 @@ async def test_llm_provider_model_capability_flow(api_client: httpx.AsyncClient)
 
 
 @pytest.mark.anyio
+async def test_llm_provider_type_validation_and_provider_config(api_client: httpx.AsyncClient):
+    # provider_type 非法（已移除 Cohere）
+    resp = await api_client.post(
+        "/v1/llm/providers",
+        json={
+            "key": "cohere-test",
+            "name": "cohere-test",
+            "provider_type": "cohere",
+            "base_url": "https://api.cohere.com",
+            "enabled": True,
+        },
+    )
+    assert resp.status_code == 422
+
+    # openai_compatible 支持 provider.config 写入通用参数
+    resp = await api_client.post(
+        "/v1/llm/providers",
+        json={
+            "key": "openai-with-config",
+            "name": "openai-with-config",
+            "provider_type": "openai_compatible",
+            "base_url": "http://localhost:8001/v1",
+            "api_key_env": "OPENAI_API_KEY",
+            "config": {
+                "temperature": 0.1,
+                "max_tokens": 123,
+                "timeout_seconds": 7,
+                "stream": False,
+            },
+            "enabled": True,
+        },
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["config"]["temperature"] == 0.1
+    assert data["config"]["max_tokens"] == 123
+    assert data["config"]["timeout_seconds"] == 7
+    assert data["config"]["stream"] is False
+
+
+@pytest.mark.anyio
 async def test_llm_callsite_flow(api_client: httpx.AsyncClient):
     # 创建 Provider
     resp = await api_client.post(
         "/v1/llm/providers",
         json={
+            "key": "openai-local",
             "name": "openai-local",
             "provider_type": "openai_compatible",
             "base_url": "http://localhost:8001/v1",

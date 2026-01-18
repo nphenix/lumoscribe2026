@@ -28,15 +28,15 @@ class LLMCapabilityRepository:
             .first()
         )
 
-    def get_by_capability_model(
-        self, capability: str, model_id: str
+    def get_by_capability_provider(
+        self, capability: str, provider_id: str
     ) -> LLMCapability | None:
-        """根据 capability 与 model 获取映射。"""
+        """根据 capability 与 provider 获取映射。"""
         return (
             self.db.query(LLMCapability)
             .filter(
                 LLMCapability.capability == capability,
-                LLMCapability.model_id == model_id,
+                LLMCapability.provider_id == provider_id,
             )
             .first()
         )
@@ -44,7 +44,7 @@ class LLMCapabilityRepository:
     def list(
         self,
         capability: str | None = None,
-        model_id: str | None = None,
+        provider_id: str | None = None,
         enabled: bool | None = None,
         limit: int = 100,
         offset: int = 0,
@@ -55,8 +55,8 @@ class LLMCapabilityRepository:
         if capability is not None:
             query = query.filter(LLMCapability.capability == capability)
 
-        if model_id is not None:
-            query = query.filter(LLMCapability.model_id == model_id)
+        if provider_id is not None:
+            query = query.filter(LLMCapability.provider_id == provider_id)
 
         if enabled is not None:
             query = query.filter(LLMCapability.enabled == enabled)
@@ -71,7 +71,7 @@ class LLMCapabilityRepository:
     def count(
         self,
         capability: str | None = None,
-        model_id: str | None = None,
+        provider_id: str | None = None,
         enabled: bool | None = None,
     ) -> int:
         """统计能力映射数量。"""
@@ -80,8 +80,8 @@ class LLMCapabilityRepository:
         if capability is not None:
             query = query.filter(LLMCapability.capability == capability)
 
-        if model_id is not None:
-            query = query.filter(LLMCapability.model_id == model_id)
+        if provider_id is not None:
+            query = query.filter(LLMCapability.provider_id == provider_id)
 
         if enabled is not None:
             query = query.filter(LLMCapability.enabled == enabled)

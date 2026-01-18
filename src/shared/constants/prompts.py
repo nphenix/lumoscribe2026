@@ -15,6 +15,7 @@ from src.application.services.content_generation.prompts import (
 )
 from src.application.services.content_generation.prompts import (
     SCOPE_CONTENT_GENERATION_SECTION,
+    SCOPE_OUTLINE_POLISH,
 )
 
 # 导出 Scope 常量供其他模块使用
@@ -22,6 +23,7 @@ __all__ = [
     "SCOPE_DOC_CLEANING",
     "SCOPE_CHART_EXTRACTION",
     "SCOPE_CONTENT_GENERATION_SECTION",
+    "SCOPE_OUTLINE_POLISH",
     "DEFAULT_PROMPTS",
 ]
 

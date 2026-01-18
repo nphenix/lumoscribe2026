@@ -3,16 +3,28 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+
+LLMProviderType = Literal[
+    "openai_compatible",
+    "ollama",
+    "flagembedding",
+    "llamacpp",
+    "huggingface",
+    "mineru",
+]
 
 
 class LLMProviderCreate(BaseModel):
     """创建 Provider 请求。"""
 
+    # 说明：key 是 Provider 的稳定唯一标识，用于 seed/引用；可由前端自动生成
+    key: str | None = Field(None, max_length=64, description="Provider 唯一标识（可选，建议小写）")
     name: str = Field(..., min_length=1, max_length=128, description="Provider 名称")
-    provider_type: str = Field(..., min_length=1, max_length=64, description="Provider 类型")
+    provider_type: LLMProviderType = Field(..., description="Provider 类型")
     base_url: str | None = Field(None, max_length=2048, description="基础 URL（可填写 endpoint）")
     api_key: str | None = Field(None, max_length=8192, description="API Key/Token 明文（可选）")
     api_key_env: str | None = Field(None, max_length=128, description="API Key 环境变量名（可选）")
@@ -24,8 +36,9 @@ class LLMProviderCreate(BaseModel):
 class LLMProviderUpdate(BaseModel):
     """更新 Provider 请求。"""
 
+    key: str | None = Field(None, max_length=64, description="Provider 唯一标识（可选，建议小写）")
     name: str | None = Field(None, min_length=1, max_length=128, description="Provider 名称")
-    provider_type: str | None = Field(None, min_length=1, max_length=64, description="Provider 类型")
+    provider_type: LLMProviderType | None = Field(None, description="Provider 类型")
     base_url: str | None = Field(None, max_length=2048, description="基础 URL（可填写 endpoint）")
     api_key: str | None = Field(None, max_length=8192, description="API Key/Token 明文（可选）")
     api_key_env: str | None = Field(None, max_length=128, description="API Key 环境变量名（可选）")
@@ -38,6 +51,7 @@ class LLMProviderResponse(BaseModel):
     """Provider 响应。"""
 
     id: str
+    key: str
     name: str
     provider_type: str
     base_url: str | None
@@ -68,66 +82,12 @@ class LLMProviderDeleteResponse(BaseModel):
     message: str
 
 
-class LLMModelCreate(BaseModel):
-    """创建模型请求。"""
-
-    provider_id: str = Field(..., min_length=1, max_length=36, description="Provider ID")
-    name: str = Field(..., min_length=1, max_length=128, description="模型名称")
-    model_kind: str = Field(..., min_length=1, max_length=64, description="模型类型")
-    config: dict[str, Any] | None = Field(None, description="模型参数")
-    enabled: bool = Field(True, description="是否启用")
-    description: str | None = Field(None, max_length=1024, description="说明")
-
-
-class LLMModelUpdate(BaseModel):
-    """更新模型请求。"""
-
-    name: str | None = Field(None, min_length=1, max_length=128, description="模型名称")
-    model_kind: str | None = Field(None, min_length=1, max_length=64, description="模型类型")
-    config: dict[str, Any] | None = Field(None, description="模型参数")
-    enabled: bool | None = Field(None, description="是否启用")
-    description: str | None = Field(None, max_length=1024, description="说明")
-
-
-class LLMModelResponse(BaseModel):
-    """模型响应。"""
-
-    id: str
-    provider_id: str
-    name: str
-    model_kind: str
-    config: dict[str, Any] | None
-    enabled: bool
-    description: str | None
-    created_at: datetime
-    updated_at: datetime
-
-    class Config:
-        from_attributes = True
-
-
-class LLMModelListResponse(BaseModel):
-    """模型列表响应。"""
-
-    items: list[LLMModelResponse]
-    total: int
-    limit: int
-    offset: int
-
-
-class LLMModelDeleteResponse(BaseModel):
-    """模型删除响应。"""
-
-    id: str
-    message: str
-
-
 class LLMCapabilityUpsertItem(BaseModel):
     """能力映射 Upsert 请求项。"""
 
     id: str | None = Field(None, description="能力映射 ID")
     capability: str = Field(..., min_length=1, max_length=128, description="能力名称")
-    model_id: str = Field(..., min_length=1, max_length=36, description="模型 ID")
+    provider_id: str = Field(..., min_length=1, max_length=36, description="Provider ID")
     priority: int = Field(100, ge=0, description="优先级（越小越优先）")
     enabled: bool = Field(True, description="是否启用")
     description: str | None = Field(None, max_length=1024, description="说明")
@@ -144,7 +104,7 @@ class LLMCapabilityResponse(BaseModel):
 
     id: str
     capability: str
-    model_id: str
+    provider_id: str
     priority: int
     enabled: bool
     description: str | None
@@ -178,9 +138,9 @@ class LLMCallSiteCreate(BaseModel):
 
     key: str = Field(..., min_length=1, max_length=256, description="调用点 key（module:action）")
     expected_model_kind: str = Field(
-        ..., min_length=1, max_length=64, description="期望模型类型（chat/embedding/rerank/multimodal）"
+        ..., min_length=1, max_length=64, description="期望模型类型（chat/embedding/rerank/multimodal/ocr）"
     )
-    model_id: str | None = Field(None, max_length=36, description="绑定的模型 ID（可为空）")
+    provider_id: str | None = Field(None, max_length=36, description="绑定的 Provider ID（可为空）")
     config: dict[str, Any] | None = Field(None, description="调用点参数覆盖（JSON）")
     prompt_scope: str | None = Field(None, max_length=256, description="提示词 scope（为空则默认使用 key）")
     enabled: bool = Field(True, description="是否启用")
@@ -190,7 +150,7 @@ class LLMCallSiteCreate(BaseModel):
 class LLMCallSiteUpdate(BaseModel):
     """更新 CallSite 请求（PATCH）。"""
 
-    model_id: str | None = Field(None, max_length=36, description="绑定的模型 ID")
+    provider_id: str | None = Field(None, max_length=36, description="绑定的 Provider ID")
     config: dict[str, Any] | None = Field(None, description="调用点参数覆盖（JSON）")
     prompt_scope: str | None = Field(None, max_length=256, description="提示词 scope")
     enabled: bool | None = Field(None, description="是否启用")
@@ -203,7 +163,7 @@ class LLMCallSiteResponse(BaseModel):
     id: str
     key: str
     expected_model_kind: str
-    model_id: str | None
+    provider_id: str | None
     config: dict[str, Any] | None
     prompt_scope: str | None
     enabled: bool

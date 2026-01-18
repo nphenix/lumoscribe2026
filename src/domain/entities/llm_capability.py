@@ -17,20 +17,20 @@ if TYPE_CHECKING:
 class LLMCapability(Base):
     """LLM 能力映射表。
 
-    capability -> model 的优先级映射，可配置启用状态。
+    capability -> provider 的优先级映射，可配置启用状态。
     """
 
     __tablename__ = "llm_capabilities"
     __table_args__ = (
-        UniqueConstraint("capability", "model_id", name="uq_capability_model"),
+        UniqueConstraint("capability", "provider_id", name="uq_capability_provider"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)  # UUID
     capability: Mapped[str] = mapped_column(
         String(128), nullable=False, index=True
     )  # 能力名称
-    model_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("llm_models.id"), nullable=False, index=True
+    provider_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("llm_providers.id"), nullable=False, index=True
     )
 
     priority: Mapped[int] = mapped_column(

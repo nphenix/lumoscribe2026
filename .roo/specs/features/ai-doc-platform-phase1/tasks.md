@@ -2,7 +2,7 @@
 id: ai-doc-platform-phase1
 status: IN_PROGRESS
 created: 2026-01-16
-updated: 2026-01-17
+updated: 2026-01-18
 links:
   - ./spec.md
   - ./plan.md
@@ -116,21 +116,23 @@ links:
 **目标**: LangChain 1.0 统一封装 + 能力映射可配置；提示词可观测与可编辑。
 **技术栈**: LangChain 1.0 (Python)
 
-- [x] T020 [P1] 设计并实现 `llm_providers/llm_models/llm_capabilities/prompts` 数据表
+- [x] T020 [P1] 设计并实现 `llm_providers/llm_capabilities/llm_call_sites/prompts` 数据表
 
   **相关文件**:
-  - Entities: [`llm_provider.py`](src/domain/entities/llm_provider.py)、[`llm_model.py`](src/domain/entities/llm_model.py)、[`llm_capability.py`](src/domain/entities/llm_capability.py)、[`prompt.py`](src/domain/entities/prompt.py)
+  - Entities: [`llm_provider.py`](src/domain/entities/llm_provider.py)、[`llm_capability.py`](src/domain/entities/llm_capability.py)、[`llm_call_site.py`](src/domain/entities/llm_call_site.py)、[`prompt.py`](src/domain/entities/prompt.py)
   - 数据库初始化: [`init-db.py`](../scripts/init-db.py)、[`verify-db.py`](../scripts/verify-db.py)
+  - **架构说明**: CallSite 和 Capability 直接绑定 Provider，不再使用 Model 中间层
 - [x] T021 [P1] 实现 LLM 基础数据 CRUD API
 
   **相关文件**:
   - Route: [`llm.py`](src/interfaces/api/routes/llm.py)
   - Schemas: [`llm.py`](src/application/schemas/llm.py)
-  - Repositories: [`llm_provider_repository.py`](src/application/repositories/llm_provider_repository.py)、[`llm_model_repository.py`](src/application/repositories/llm_model_repository.py)、[`llm_capability_repository.py`](src/application/repositories/llm_capability_repository.py)
-  - Services: [`llm_provider_service.py`](src/application/services/llm_provider_service.py)、[`llm_model_service.py`](src/application/services/llm_model_service.py)、[`llm_capability_service.py`](src/application/services/llm_capability_service.py)
+  - Repositories: [`llm_provider_repository.py`](src/application/repositories/llm_provider_repository.py)、[`llm_capability_repository.py`](src/application/repositories/llm_capability_repository.py)、[`llm_call_site_repository.py`](src/application/repositories/llm_call_site_repository.py)
+  - Services: [`llm_provider_service.py`](src/application/services/llm_provider_service.py)、[`llm_capability_service.py`](src/application/services/llm_capability_service.py)、[`llm_call_site_service.py`](src/application/services/llm_call_site_service.py)
   - Tests: [`test_llm_config_api.py`](tests/test_llm_config_api.py)
   - Provider 支持: OpenAI 兼容, ChatGPT, Gemini, Ollama, vLLM, GPUStack, FlagEmbedding，llama.cpp，mineru
-  - Model 类型: 推理 (Chat/Completion), Embedding, Rerank, Multimodal, OCR
+  - 模型类型: 通过 CallSite 的 `expected_model_kind` 字段确定（Chat/Completion, Embedding, Rerank, Multimodal, OCR）
+  - **架构变更** (2026-01-18): 移除 Model 层，CallSite 和 Capability 直接绑定 Provider
 - [x] T022 [P1] 实现 prompts CRUD + version/active 切换 API
 
   **相关文件**:
@@ -143,9 +145,10 @@ links:
 
   **相关文件**:
   - Runtime: [`llm_runtime_service.py`](src/application/services/llm_runtime_service.py)
-  - Repositories: [`llm_provider_repository.py`](src/application/repositories/llm_provider_repository.py)、[`llm_model_repository.py`](src/application/repositories/llm_model_repository.py)、[`llm_capability_repository.py`](src/application/repositories/llm_capability_repository.py)、[`prompt_repository.py`](src/application/repositories/prompt_repository.py)
+  - Repositories: [`llm_provider_repository.py`](src/application/repositories/llm_provider_repository.py)、[`llm_capability_repository.py`](src/application/repositories/llm_capability_repository.py)、[`llm_call_site_repository.py`](src/application/repositories/llm_call_site_repository.py)、[`prompt_repository.py`](src/application/repositories/prompt_repository.py)
   - 维度1: 技术适配层（标准化不同 Provider 的调用）
-  - 维度2: 业务能力层（按 Capability 路由模型：MinerU, 清洗, 润色, 图转JSON, 长文生成, 向量生成）
+  - 维度2: 业务能力层（按 CallSite 或 Capability 路由 Provider：MinerU, 清洗, 润色, 图转JSON, 长文生成, 向量生成）
+  - **架构变更** (2026-01-18): 运行时直接从 Provider 构建模型，使用 CallSite 的 `expected_model_kind` 确定模型类型，模型名称从 Provider 的 `config_json` 中获取
 - [x] T024 [P1] 重构提示词管理为 Code-First Seed 模式
   
   **相关文件**:
@@ -164,6 +167,7 @@ links:
   - Route: [`llm.py`](src/interfaces/api/routes/llm.py)
   - Code-First 注册: [`llm_callsites.py`](src/shared/constants/llm_callsites.py)、各模块 `callsites.py`
   - 数据库初始化/迁移: [`init-db.py`](../scripts/init-db.py)、[`db.py`](src/shared/db.py)
+  - **架构变更** (2026-01-18): CallSite 直接绑定 Provider（`provider_id`），不再通过 Model 中间层。模型类型由 `expected_model_kind` 字段确定，模型名称从 Provider 的 `config_json` 中获取
 
 ---
 
@@ -256,11 +260,12 @@ links:
   **相关文件**:
   - 页面: [`sources/`](src/interfaces/admin-web/app/documents/sources/page.tsx)、[`templates/`](src/interfaces/admin-web/app/documents/templates/page.tsx)、[`targets/`](src/interfaces/admin-web/app/documents/targets/page.tsx)、[`intermediates/`](src/interfaces/admin-web/app/documents/intermediates/page.tsx)
   - Hooks: [`use-documents.ts`](src/interfaces/admin-web/hooks/use-documents.ts)
-- [x] T052 [P1] 实现 LLM 配置页面（Provider/Model/Capability 增删改查与测试）
+- [x] T052 [P1] 实现 LLM 配置页面（Provider/Capability/CallSite 增删改查与测试）
 
   **相关文件**:
-  - 页面: [`providers/`](src/interfaces/admin-web/app/llm/providers/page.tsx)、[`models/`](src/interfaces/admin-web/app/llm/models/page.tsx)、[`capabilities/`](src/interfaces/admin-web/app/llm/capabilities/page.tsx)
+  - 页面: [`providers/`](src/interfaces/admin-web/app/llm/providers/page.tsx)、[`capabilities/`](src/interfaces/admin-web/app/llm/capabilities/page.tsx)、[`call-sites/`](src/interfaces/admin-web/app/llm/call-sites/page.tsx)
   - Hooks: [`use-llm.ts`](src/interfaces/admin-web/hooks/use-llm.ts)
+  - **架构变更** (2026-01-18): 移除 Model 管理页面，CallSite 和 Capability 页面改为直接绑定 Provider
 - [x] T055 [P1] 实现“LLM 调用点”管理页面（绑定模型/参数覆盖/prompt_scope/启用）
 
   **相关文件**:
@@ -288,4 +293,45 @@ links:
 
 ---
 
-**版本**: 1.4.1 | **创建**: 2026-01-16 | **最后更新**: 2026-01-17
+**版本**: 1.4.3 | **创建**: 2026-01-16 | **最后更新**: 2026-01-18
+
+## 架构变更记录
+
+### 2026-01-18: Provider 配置增强与大纲润色功能
+
+**变更内容**:
+- 为 `flagembedding` 和 `ollama` Provider 类型添加 `max_tokens` 配置项
+- 新增用户自定义大纲的 LLM 润色功能
+  - 新增调用点：`content_generation:polish_outline`
+  - 新增提示词：`SCOPE_OUTLINE_POLISH`
+  - 在 `ContentGenerationService` 中实现 `polish_outline` 方法
+
+**相关文件**:
+- 常量: [`llm_providers.py`](src/shared/constants/llm_providers.py)
+- 前端: [`providers/page.tsx`](src/interfaces/admin-web/app/llm/providers/page.tsx)
+- 调用点: [`content_generation/callsites.py`](src/application/services/content_generation/callsites.py)
+- 提示词: [`content_generation/prompts.py`](src/application/services/content_generation/prompts.py)
+- 服务: [`content_generation_service.py`](src/application/services/content_generation_service.py)
+- 常量聚合: [`prompts.py`](src/shared/constants/prompts.py)
+
+**影响任务**:
+- T021: LLM 基础数据 CRUD API（Provider 配置项扩展）
+- T023: LLM 统一调用封装（支持大纲润色调用点）
+- T025: LLM 调用点配置（新增大纲润色调用点）
+- T052: LLM 配置页面（Provider 配置界面增强）
+
+### 2026-01-18: 移除 Model 层，CallSite 和 Capability 直接绑定 Provider
+
+**变更内容**:
+- 删除 `llm_models` 数据表和 `LLMModel` 实体
+- CallSite 和 Capability 的 `model_id` 字段改为 `provider_id`
+- 运行时服务直接从 Provider 构建模型，使用 CallSite 的 `expected_model_kind` 确定模型类型
+- 模型名称从 Provider 的 `config_json` 中获取（`model` 或 `model_name` 字段）
+- 删除前端 Model 管理页面
+
+**影响任务**:
+- T020: 数据表设计（移除 `llm_models`）
+- T021: CRUD API（移除 Model 相关路由）
+- T023: 运行时封装（改为直接从 Provider 构建）
+- T025: CallSite 配置（改为绑定 Provider）
+- T052: 前端配置页面（移除 Model 页面）

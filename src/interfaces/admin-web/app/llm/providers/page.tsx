@@ -1,7 +1,15 @@
 'use client';
 
 import { useState } from 'react';
-import { useLLMProviders, useCreateLLMProvider, useDeleteLLMProvider, LLMProviderCreate } from '@/hooks/use-llm';
+import {
+  useLLMProviders,
+  useCreateLLMProvider,
+  useDeleteLLMProvider,
+  useUpdateLLMProvider,
+  LLMProviderCreate,
+  LLMProviderUpdate,
+  LLMProvider,
+} from '@/hooks/use-llm';
 import { Button } from '@/components/ui/button';
 import {
   Table,
@@ -23,15 +31,37 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Plus, Trash2, Server } from 'lucide-react';
+import { Switch } from '@/components/ui/switch';
+import { Plus, Trash2, Server, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
+
+function makeProviderKey(name: string, providerType: string): string {
+  const raw = (name || '').trim().toLowerCase();
+  const slug = raw
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  if (slug) return slug.slice(0, 64);
+  // fallback：用类型 + 随机短 id（避免中文名称生成空 key）
+  const base = (providerType || 'provider').toLowerCase().replace(/[^a-z0-9]+/g, '_') || 'provider';
+  const short = (globalThis.crypto?.randomUUID?.() || `${Date.now()}`)
+    .replace(/[^a-z0-9]/gi, '')
+    .slice(0, 8)
+    .toLowerCase();
+  return `${base}_${short}`.slice(0, 64);
+}
 
 export default function ProvidersPage() {
   const { data: providers, isLoading } = useLLMProviders();
   const createMutation = useCreateLLMProvider();
+  const updateMutation = useUpdateLLMProvider();
   const deleteMutation = useDeleteLLMProvider();
   const [isOpen, setIsOpen] = useState(false);
+  const [editing, setEditing] = useState<LLMProvider | null>(null);
+  const [providerKeyTouched, setProviderKeyTouched] = useState(false);
+  const [apiKeyTouched, setApiKeyTouched] = useState(false);
   const [formData, setFormData] = useState<LLMProviderCreate>({
+    key: '',
     name: '',
     base_url: '',
     api_key: '',
@@ -39,13 +69,126 @@ export default function ProvidersPage() {
     provider_type: 'openai_compatible',
     enabled: true,
   });
+  const [openaiConfig, setOpenaiConfig] = useState<{
+    model: string;
+    temperature: string;
+    max_tokens: string;
+    timeout_seconds: string;
+    stream: boolean;
+  }>({
+    model: '',
+    temperature: '0.2',
+    max_tokens: '2048',
+    timeout_seconds: '60',
+    stream: false,
+  });
+  const [ollamaConfig, setOllamaConfig] = useState<{
+    ollama_model: string;
+    max_tokens: string;
+  }>({
+    ollama_model: 'llama3.1',
+    max_tokens: '2048',
+  });
+  const [flagEmbeddingConfig, setFlagEmbeddingConfig] = useState<{
+    device: string;
+    use_fp16: boolean;
+    trust_remote_code: boolean;
+    batch_size: string;
+    max_tokens: string;
+  }>({
+    device: 'cpu',
+    use_fp16: true,
+    trust_remote_code: true,
+    batch_size: '32',
+    max_tokens: '2048',
+  });
+
+  const showBaseUrl =
+    formData.provider_type === 'openai_compatible' ||
+    formData.provider_type === 'ollama' ||
+    formData.provider_type === 'huggingface' ||
+    formData.provider_type === 'mineru';
 
   const handleSubmit = async () => {
     try {
-      await createMutation.mutateAsync(formData as any);
-      toast.success('供应商创建成功');
+      let config: Record<string, any> | undefined = undefined;
+      if (formData.provider_type === 'openai_compatible') {
+        const next: Record<string, any> = {
+          model: openaiConfig.model?.trim() || undefined,
+          temperature:
+            openaiConfig.temperature?.trim().length > 0
+              ? Number.parseFloat(openaiConfig.temperature)
+              : undefined,
+          max_tokens:
+            openaiConfig.max_tokens?.trim().length > 0
+              ? Number.parseInt(openaiConfig.max_tokens, 10)
+              : undefined,
+          timeout_seconds:
+            openaiConfig.timeout_seconds?.trim().length > 0
+              ? Number.parseInt(openaiConfig.timeout_seconds, 10)
+              : undefined,
+          stream: openaiConfig.stream,
+        };
+        config = Object.fromEntries(Object.entries(next).filter(([, v]) => v !== undefined));
+      } else if (formData.provider_type === 'ollama') {
+        const next: Record<string, any> = {
+          ollama_model: ollamaConfig.ollama_model?.trim() || undefined,
+          max_tokens:
+            ollamaConfig.max_tokens?.trim().length > 0
+              ? Number.parseInt(ollamaConfig.max_tokens, 10)
+              : undefined,
+        };
+        config = Object.fromEntries(Object.entries(next).filter(([, v]) => v !== undefined));
+      } else if (formData.provider_type === 'flagembedding') {
+        const next: Record<string, any> = {
+          // 默认本地模式，不使用远程服务
+          remote: false,
+          device: flagEmbeddingConfig.device?.trim() || undefined,
+          use_fp16: flagEmbeddingConfig.use_fp16,
+          trust_remote_code: flagEmbeddingConfig.trust_remote_code,
+          batch_size:
+            flagEmbeddingConfig.batch_size?.trim().length > 0
+              ? Number.parseInt(flagEmbeddingConfig.batch_size, 10)
+              : undefined,
+          max_tokens:
+            flagEmbeddingConfig.max_tokens?.trim().length > 0
+              ? Number.parseInt(flagEmbeddingConfig.max_tokens, 10)
+              : undefined,
+        };
+        config = Object.fromEntries(Object.entries(next).filter(([, v]) => v !== undefined));
+      }
+
+      if (editing) {
+        const patch: LLMProviderUpdate = {
+          key: formData.key || undefined,
+          name: formData.name,
+          provider_type: formData.provider_type,
+          base_url: formData.base_url || null,
+          api_key_env: formData.api_key_env || null,
+          enabled: formData.enabled ?? true,
+          config: config || null,
+        };
+        if (apiKeyTouched && (formData.api_key || '').trim().length > 0) {
+          patch.api_key = formData.api_key;
+        }
+        await updateMutation.mutateAsync({ id: editing.id, patch });
+        toast.success('供应商已更新');
+      } else {
+        const payload: any = {
+          ...formData,
+          // key 为空时让后端自动生成
+          key: (formData.key || '').trim().length > 0 ? formData.key : undefined,
+          config,
+        };
+        await createMutation.mutateAsync(payload);
+        toast.success('供应商创建成功');
+      }
       setIsOpen(false);
+      setEditing(null);
+      setProviderKeyTouched(false);
+      setApiKeyTouched(false);
       setFormData({
+        key: '',
         name: '',
         base_url: '',
         api_key: '',
@@ -53,9 +196,97 @@ export default function ProvidersPage() {
         provider_type: 'openai_compatible',
         enabled: true,
       });
+      setOpenaiConfig({
+        model: '',
+        temperature: '0.2',
+        max_tokens: '2048',
+        timeout_seconds: '60',
+        stream: false,
+      });
+      setOllamaConfig({
+        ollama_model: 'llama3.1',
+        max_tokens: '2048',
+      });
+      setFlagEmbeddingConfig({
+        device: 'cpu',
+        use_fp16: true,
+        trust_remote_code: true,
+        batch_size: '32',
+        max_tokens: '2048',
+      });
     } catch (error) {
-      toast.error('创建供应商失败');
+      toast.error(editing ? '更新供应商失败' : '创建供应商失败');
     }
+  };
+
+  const openCreate = () => {
+    setEditing(null);
+    setProviderKeyTouched(false);
+    setApiKeyTouched(false);
+    setFormData({
+      key: '',
+      name: '',
+      base_url: '',
+      api_key: '',
+      api_key_env: '',
+      provider_type: 'openai_compatible',
+      enabled: true,
+    });
+    setOpenaiConfig({
+      model: '',
+      temperature: '0.2',
+      max_tokens: '2048',
+      timeout_seconds: '60',
+      stream: false,
+    });
+    setOllamaConfig({
+      ollama_model: 'llama3.1',
+      max_tokens: '2048',
+    });
+    setFlagEmbeddingConfig({
+      device: 'cpu',
+      use_fp16: true,
+      trust_remote_code: true,
+      batch_size: '32',
+      max_tokens: '2048',
+    });
+    setIsOpen(true);
+  };
+
+  const openEdit = (p: LLMProvider) => {
+    setEditing(p);
+    setProviderKeyTouched(false);
+    setApiKeyTouched(false);
+    setFormData({
+      key: p.key || '',
+      name: p.name || '',
+      base_url: p.base_url || '',
+      api_key: '',
+      api_key_env: p.api_key_env || '',
+      provider_type: p.provider_type || 'openai_compatible',
+      enabled: p.enabled ?? true,
+    });
+    const cfg = (p.config || {}) as any;
+    setOpenaiConfig({
+      model: cfg.model || '',
+      temperature: typeof cfg.temperature === 'number' ? String(cfg.temperature) : '0.2',
+      max_tokens: typeof cfg.max_tokens === 'number' ? String(cfg.max_tokens) : '2048',
+      timeout_seconds: typeof cfg.timeout_seconds === 'number' ? String(cfg.timeout_seconds) : '60',
+      stream: Boolean(cfg.stream),
+    });
+    setOllamaConfig({
+      ollama_model: cfg.ollama_model || 'llama3.1',
+      max_tokens: typeof cfg.max_tokens === 'number' ? String(cfg.max_tokens) : '2048',
+    });
+    setFlagEmbeddingConfig({
+      device: cfg.device || 'cpu',
+      use_fp16: cfg.use_fp16 !== undefined ? Boolean(cfg.use_fp16) : true,
+      trust_remote_code:
+        cfg.trust_remote_code !== undefined ? Boolean(cfg.trust_remote_code) : true,
+      batch_size: cfg.batch_size !== undefined ? String(cfg.batch_size) : '32',
+      max_tokens: typeof cfg.max_tokens === 'number' ? String(cfg.max_tokens) : '2048',
+    });
+    setIsOpen(true);
   };
 
   const handleDelete = async (id: string) => {
@@ -77,32 +308,67 @@ export default function ProvidersPage() {
         <h1 className="text-3xl font-bold tracking-tight">模型供应商</h1>
         <Dialog open={isOpen} onOpenChange={setIsOpen}>
           <DialogTrigger asChild>
-            <Button>
+            <Button onClick={openCreate}>
               <Plus className="mr-2 h-4 w-4" />
               添加供应商
             </Button>
           </DialogTrigger>
-          <DialogContent>
+          <DialogContent
+            // 防止切出窗口/聚焦到地址栏/复制粘贴时触发“focus outside”从而自动关闭弹窗
+            onInteractOutside={(e) => e.preventDefault()}
+          >
             <DialogHeader>
-              <DialogTitle>添加模型供应商</DialogTitle>
+              <DialogTitle>{editing ? '编辑模型供应商' : '添加模型供应商'}</DialogTitle>
               <DialogDescription>
                 配置一个新的 LLM 服务端点。
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4">
               <div className="grid gap-2">
+                <Label htmlFor="key">唯一标识符（Provider Key）</Label>
+                <Input
+                  id="key"
+                  placeholder="可留空自动生成；建议小写，例如 openai / ollama / mineru"
+                  value={formData.key}
+                  onChange={(e) => {
+                    setProviderKeyTouched(true);
+                    setFormData({ ...formData, key: e.target.value });
+                  }}
+                />
+              </div>
+              <div className="grid gap-2">
                 <Label htmlFor="name">名称</Label>
                 <Input
                   id="name"
                   value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                  onChange={(e) => {
+                    const nextName = e.target.value;
+                    setFormData((prev) => {
+                      const next = { ...prev, name: nextName };
+                      if (!providerKeyTouched && (!prev.key || prev.key.trim().length === 0)) {
+                        next.key = makeProviderKey(nextName, prev.provider_type);
+                      }
+                      return next;
+                    });
+                  }}
                 />
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="type">类型</Label>
                 <Select
                   value={formData.provider_type}
-                  onValueChange={(value) => setFormData({ ...formData, provider_type: value })}
+                  onValueChange={(value) => {
+                    const next: any = { ...formData, provider_type: value };
+                    // 切换类型时，清空不适用字段，减少误配置
+                    if (value === 'flagembedding' || value === 'llamacpp') {
+                      next.base_url = '';
+                    }
+                    if (value === 'flagembedding') {
+                      next.api_key = '';
+                      next.api_key_env = '';
+                    }
+                    setFormData(next);
+                  }}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="选择类型" />
@@ -111,30 +377,39 @@ export default function ProvidersPage() {
                     <SelectItem value="openai_compatible">OpenAI 兼容</SelectItem>
                     <SelectItem value="ollama">Ollama</SelectItem>
                     <SelectItem value="flagembedding">FlagEmbedding</SelectItem>
-                    <SelectItem value="cohere">Cohere</SelectItem>
                     <SelectItem value="huggingface">HuggingFace</SelectItem>
                     <SelectItem value="llamacpp">LlamaCpp</SelectItem>
                     <SelectItem value="mineru">MinerU (OCR/解析)</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
-              <div className="grid gap-2">
-                <Label htmlFor="base_url">Base URL</Label>
-                <Input
-                  id="base_url"
-                  placeholder="例如：https://api.openai.com/v1"
-                  value={formData.base_url}
-                  onChange={(e) => setFormData({ ...formData, base_url: e.target.value })}
-                />
-              </div>
+
+              {showBaseUrl && (
+                <div className="grid gap-2">
+                  <Label htmlFor="base_url">Base URL</Label>
+                  <Input
+                    id="base_url"
+                    placeholder={
+                      formData.provider_type === 'ollama'
+                        ? '例如：http://localhost:11434'
+                        : '例如：https://api.openai.com/v1'
+                    }
+                    value={formData.base_url}
+                    onChange={(e) => setFormData({ ...formData, base_url: e.target.value })}
+                  />
+                </div>
+              )}
               <div className="grid gap-2">
                 <Label htmlFor="api_key">API Key / Token（明文）</Label>
                 <Input
                   id="api_key"
                   type="password"
-                  placeholder="可选：直接填写明文 Key/Token"
+                  placeholder={editing ? '留空表示不修改' : '可选：直接填写明文 Key/Token'}
                   value={formData.api_key || ''}
-                  onChange={(e) => setFormData({ ...formData, api_key: e.target.value })}
+                  onChange={(e) => {
+                    setApiKeyTouched(true);
+                    setFormData({ ...formData, api_key: e.target.value });
+                  }}
                 />
               </div>
               <div className="grid gap-2">
@@ -146,10 +421,177 @@ export default function ProvidersPage() {
                   onChange={(e) => setFormData({ ...formData, api_key_env: e.target.value })}
                 />
               </div>
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="enabled"
+                  checked={formData.enabled ?? true}
+                  onCheckedChange={(checked) => setFormData({ ...formData, enabled: checked })}
+                />
+                <Label htmlFor="enabled">启用</Label>
+              </div>
+
+              {formData.provider_type === 'openai_compatible' && (
+                <>
+                  <div className="grid gap-2">
+                    <Label htmlFor="llm_model">LLM_MODEL</Label>
+                    <Input
+                      id="llm_model"
+                      placeholder="可选：例如 gpt-4o-mini"
+                      value={openaiConfig.model}
+                      onChange={(e) =>
+                        setOpenaiConfig((prev) => ({ ...prev, model: e.target.value }))
+                      }
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div className="grid gap-2">
+                      <Label htmlFor="llm_temperature">LLM_TEMPERATURE</Label>
+                      <Input
+                        id="llm_temperature"
+                        type="number"
+                        step="0.1"
+                        value={openaiConfig.temperature}
+                        onChange={(e) =>
+                          setOpenaiConfig((prev) => ({ ...prev, temperature: e.target.value }))
+                        }
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor="llm_max_tokens">LLM_MAX_TOKENS</Label>
+                      <Input
+                        id="llm_max_tokens"
+                        type="number"
+                        value={openaiConfig.max_tokens}
+                        onChange={(e) =>
+                          setOpenaiConfig((prev) => ({ ...prev, max_tokens: e.target.value }))
+                        }
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div className="grid gap-2">
+                      <Label htmlFor="llm_timeout_seconds">LLM_TIMEOUT_SECONDS</Label>
+                      <Input
+                        id="llm_timeout_seconds"
+                        type="number"
+                        value={openaiConfig.timeout_seconds}
+                        onChange={(e) =>
+                          setOpenaiConfig((prev) => ({
+                            ...prev,
+                            timeout_seconds: e.target.value,
+                          }))
+                        }
+                      />
+                    </div>
+                    <div className="flex items-center gap-2 pt-7">
+                      <Switch
+                        id="llm_stream"
+                        checked={openaiConfig.stream}
+                        onCheckedChange={(checked) =>
+                          setOpenaiConfig((prev) => ({ ...prev, stream: checked }))
+                        }
+                      />
+                      <Label htmlFor="llm_stream">LLM_STREAM</Label>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {formData.provider_type === 'ollama' && (
+                <>
+                  <div className="grid gap-2">
+                    <Label htmlFor="ollama_model">OLLAMA_MODEL</Label>
+                    <Input
+                      id="ollama_model"
+                      placeholder="可选：例如 llama3.1"
+                      value={ollamaConfig.ollama_model}
+                      onChange={(e) =>
+                        setOllamaConfig((prev) => ({ ...prev, ollama_model: e.target.value }))
+                      }
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="ollama_max_tokens">LLM_MAX_TOKENS</Label>
+                    <Input
+                      id="ollama_max_tokens"
+                      type="number"
+                      placeholder="例如 2048"
+                      value={ollamaConfig.max_tokens}
+                      onChange={(e) =>
+                        setOllamaConfig((prev) => ({ ...prev, max_tokens: e.target.value }))
+                      }
+                    />
+                  </div>
+                </>
+              )}
+
+              {formData.provider_type === 'flagembedding' && (
+                <>
+                  <div className="grid gap-2">
+                    <Label htmlFor="fe_device">FLAGEMBEDDING_DEVICE</Label>
+                    <Input
+                      id="fe_device"
+                      placeholder="例如 cpu / cuda / cuda:0"
+                      value={flagEmbeddingConfig.device}
+                      onChange={(e) =>
+                        setFlagEmbeddingConfig((prev) => ({ ...prev, device: e.target.value }))
+                      }
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div className="flex items-center gap-2 pt-2">
+                      <Switch
+                        id="fe_use_fp16"
+                        checked={flagEmbeddingConfig.use_fp16}
+                        onCheckedChange={(checked) =>
+                          setFlagEmbeddingConfig((prev) => ({ ...prev, use_fp16: checked }))
+                        }
+                      />
+                      <Label htmlFor="fe_use_fp16">FLAGEMBEDDING_USE_FP16</Label>
+                    </div>
+                    <div className="flex items-center gap-2 pt-2">
+                      <Switch
+                        id="fe_trust_remote_code"
+                        checked={flagEmbeddingConfig.trust_remote_code}
+                        onCheckedChange={(checked) =>
+                          setFlagEmbeddingConfig((prev) => ({
+                            ...prev,
+                            trust_remote_code: checked,
+                          }))
+                        }
+                      />
+                      <Label htmlFor="fe_trust_remote_code">FLAGEMBEDDING_TRUST_REMOTE_CODE</Label>
+                    </div>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="fe_batch_size">FLAGEMBEDDING_BATCH_SIZE</Label>
+                    <Input
+                      id="fe_batch_size"
+                      type="number"
+                      value={flagEmbeddingConfig.batch_size}
+                      onChange={(e) =>
+                        setFlagEmbeddingConfig((prev) => ({ ...prev, batch_size: e.target.value }))
+                      }
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="fe_max_tokens">LLM_MAX_TOKENS</Label>
+                    <Input
+                      id="fe_max_tokens"
+                      type="number"
+                      placeholder="例如 2048"
+                      value={flagEmbeddingConfig.max_tokens}
+                      onChange={(e) =>
+                        setFlagEmbeddingConfig((prev) => ({ ...prev, max_tokens: e.target.value }))
+                      }
+                    />
+                  </div>
+                </>
+              )}
             </div>
             <div className="flex justify-end">
-              <Button onClick={handleSubmit} disabled={createMutation.isPending}>
-                {createMutation.isPending ? '保存中...' : '保存'}
+              <Button onClick={handleSubmit} disabled={createMutation.isPending || updateMutation.isPending}>
+                {(createMutation.isPending || updateMutation.isPending) ? '保存中...' : '保存'}
               </Button>
             </div>
           </DialogContent>
@@ -164,6 +606,7 @@ export default function ProvidersPage() {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead>标识符</TableHead>
                 <TableHead>名称</TableHead>
                 <TableHead>类型</TableHead>
                 <TableHead>Base URL</TableHead>
@@ -174,6 +617,7 @@ export default function ProvidersPage() {
             <TableBody>
               {providers?.map((provider) => (
                 <TableRow key={provider.id}>
+                  <TableCell className="font-mono text-sm">{provider.key}</TableCell>
                   <TableCell className="font-medium flex items-center">
                     <Server className="mr-2 h-4 w-4 text-blue-500" />
                     {provider.name}
@@ -195,6 +639,15 @@ export default function ProvidersPage() {
                     <Button
                       variant="ghost"
                       size="icon"
+                      className="text-gray-700 hover:bg-gray-100"
+                      onClick={() => openEdit(provider)}
+                      title="编辑"
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
                       className="text-red-500 hover:text-red-700 hover:bg-red-50"
                       onClick={() => handleDelete(provider.id)}
                     >
@@ -205,7 +658,7 @@ export default function ProvidersPage() {
               ))}
               {providers?.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8 text-gray-500">
+                  <TableCell colSpan={6} className="text-center py-8 text-gray-500">
                     暂无配置。
                   </TableCell>
                 </TableRow>

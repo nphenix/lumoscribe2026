@@ -28,6 +28,10 @@ class LLMProviderRepository:
         """根据名称获取 Provider。"""
         return self.db.query(LLMProvider).filter(LLMProvider.name == name).first()
 
+    def get_by_key(self, key: str) -> LLMProvider | None:
+        """根据 key 获取 Provider。"""
+        return self.db.query(LLMProvider).filter(LLMProvider.key == key).first()
+
     def list(
         self,
         provider_type: str | None = None,

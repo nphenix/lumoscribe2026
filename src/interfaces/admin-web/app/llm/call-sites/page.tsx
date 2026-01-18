@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import {
   LLMCallSite,
   useLLMCallSites,
-  useLLMModels,
+  useLLMProviders,
   useUpdateLLMCallSite,
 } from '@/hooks/use-llm';
 import { Button } from '@/components/ui/button';
@@ -28,33 +28,28 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
-import { Textarea } from '@/components/ui/textarea';
 import { Settings2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 export default function CallSitesPage() {
   const { data: callSites, isLoading } = useLLMCallSites();
-  const { data: models } = useLLMModels();
+  const { data: providers } = useLLMProviders();
   const updateMutation = useUpdateLLMCallSite();
 
-  const modelNameById = useMemo(() => {
+  const providerNameById = useMemo(() => {
     const map = new Map<string, string>();
-    (models || []).forEach((m) => map.set(m.id, m.name));
+    (providers || []).forEach((p) => map.set(p.id, p.name));
     return map;
-  }, [models]);
+  }, [providers]);
 
   const [selected, setSelected] = useState<LLMCallSite | null>(null);
-  const [configText, setConfigText] = useState<string>('{}');
-  const [patchModelId, setPatchModelId] = useState<string>('');
-  const [patchPromptScope, setPatchPromptScope] = useState<string>('');
+  const [patchProviderId, setPatchProviderId] = useState<string>('');
   const [patchEnabled, setPatchEnabled] = useState<boolean>(true);
   const [patchDescription, setPatchDescription] = useState<string>('');
 
   const openEditor = (cs: LLMCallSite) => {
     setSelected(cs);
-    setConfigText(JSON.stringify(cs.config ?? {}, null, 2));
-    setPatchModelId(cs.model_id || '');
-    setPatchPromptScope(cs.prompt_scope || '');
+    setPatchProviderId(cs.provider_id || '');
     setPatchEnabled(cs.enabled);
     setPatchDescription(cs.description || '');
   };
@@ -66,30 +61,27 @@ export default function CallSitesPage() {
   const handleSave = async () => {
     if (!selected) return;
     try {
-      const config =
-        configText && configText.trim().length > 0 ? JSON.parse(configText) : undefined;
-
       await updateMutation.mutateAsync({
         id: selected.id,
         patch: {
-          model_id: patchModelId || null,
-          config,
-          prompt_scope: patchPromptScope || null,
+          provider_id: patchProviderId || null,
           enabled: patchEnabled,
           description: patchDescription || null,
+          // 注意：config_json 和 prompt_scope 字段已从界面移除
+          // 如需配置可通过 API 直接调用，或后续添加高级选项界面
         },
       });
       toast.success('调用点配置已更新');
       closeEditor();
     } catch (e) {
-      toast.error('保存失败：请检查 JSON 格式或后端错误');
+      toast.error('保存失败：请检查后端错误');
     }
   };
 
-  const candidateModels = useMemo(() => {
-    if (!selected) return models || [];
-    return (models || []).filter((m) => m.model_kind === selected.expected_model_kind);
-  }, [models, selected]);
+  const candidateProviders = useMemo(() => {
+    // 显示所有已启用的 Provider
+    return (providers || []).filter((p) => p.enabled);
+  }, [providers]);
 
   if (isLoading) return <div>加载中...</div>;
 
@@ -110,7 +102,7 @@ export default function CallSitesPage() {
                 <TableHead>Key</TableHead>
                 <TableHead>说明</TableHead>
                 <TableHead>期望类型</TableHead>
-                <TableHead>绑定模型</TableHead>
+                <TableHead>绑定 Provider</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead className="text-right">操作</TableHead>
               </TableRow>
@@ -124,7 +116,7 @@ export default function CallSitesPage() {
                   </TableCell>
                   <TableCell>{cs.expected_model_kind}</TableCell>
                   <TableCell className="text-gray-600">
-                    {cs.model_id ? modelNameById.get(cs.model_id) || cs.model_id : '未绑定'}
+                    {cs.provider_id ? providerNameById.get(cs.provider_id) || cs.provider_id : '未绑定'}
                   </TableCell>
                   <TableCell>
                     <span
@@ -167,7 +159,7 @@ export default function CallSitesPage() {
           <DialogHeader>
             <DialogTitle>编辑调用点</DialogTitle>
             <DialogDescription>
-              绑定模型、设置参数覆盖与提示词 scope（为空则默认使用 key）。
+              绑定 Provider 并配置调用点基本设置。
             </DialogDescription>
           </DialogHeader>
 
@@ -178,42 +170,26 @@ export default function CallSitesPage() {
                 <Input value={selected.key} disabled />
               </div>
 
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div className="grid gap-2">
-                  <Label htmlFor="model_id">绑定模型</Label>
-                  <Select value={patchModelId} onValueChange={setPatchModelId}>
-                    <SelectTrigger id="model_id" className="w-full">
-                      <SelectValue placeholder="选择模型" />
-                    </SelectTrigger>
-                    <SelectContent position="popper" align="start" sideOffset={6}>
-                      {candidateModels.map((m) => (
-                        <SelectItem key={m.id} value={m.id}>
-                          {m.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="grid gap-2">
-                  <Label htmlFor="prompt_scope">Prompt Scope</Label>
-                  <Input
-                    id="prompt_scope"
-                    placeholder="为空则使用 key"
-                    value={patchPromptScope}
-                    onChange={(e) => setPatchPromptScope(e.target.value)}
-                  />
-                </div>
-              </div>
-
               <div className="grid gap-2">
-                <Label htmlFor="config">参数覆盖 (JSON)</Label>
-                <Textarea
-                  id="config"
-                  value={configText}
-                  onChange={(e) => setConfigText(e.target.value)}
-                  className="font-mono text-sm min-h-[180px]"
-                />
+                <Label htmlFor="provider_id">绑定 Provider</Label>
+                <Select value={patchProviderId} onValueChange={setPatchProviderId}>
+                  <SelectTrigger id="provider_id" className="w-full">
+                    <SelectValue placeholder="选择 Provider" />
+                  </SelectTrigger>
+                  <SelectContent position="popper" align="start" sideOffset={6}>
+                    {candidateProviders.length > 0 ? (
+                      candidateProviders.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>
+                          {p.name} ({p.provider_type})
+                        </SelectItem>
+                      ))
+                    ) : (
+                      <div className="px-2 py-1.5 text-sm text-gray-500">
+                        暂无可用 Provider。请先在"模型供应商"页面创建 Provider。
+                      </div>
+                    )}
+                  </SelectContent>
+                </Select>
               </div>
 
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -246,4 +222,3 @@ export default function CallSitesPage() {
     </div>
   );
 }
-
