@@ -1,0 +1,64 @@
+[project]
+name = "lumoscribe2026"
+version = "0.1.0"
+description = "面向 AI 的文档生成平台（第一阶段）"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic-settings>=2.6",
+    "sqlalchemy>=2.0",
+    "python-json-logger>=2.0",
+    "httpx>=0.28",
+    "tenacity>=8.0",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "celery[redis]>=5.4",
+    "redis>=5.2",
+    # AI/LLM 依赖（第一阶段规划）
+    "langchain>=1.0.0",
+    "langchain-openai>=0.1.0",
+    "langchain-ollama",
+    # RAG 依赖
+    "llama-index>=0.14.6",
+    "llama-index-readers-file>=0.2.0",
+    "llama-index-vector-stores-chroma>=0.2.0",
+    "llama-index-retrievers-bm25>=0.2.0",
+    # 向量数据库
+    "chromadb>=0.5.0",
+    # Embedding 模型
+    "FlagEmbedding>=1.3.5",
+    # 重排序模型
+    "sentence-transformers>=3.0.0",
+    # PyTorch（RTX 50系/Blackwell架构支持）
+    "torch>=2.4.0",
+    "torchvision>=0.19.0",
+]
+
+# --- uv 跨平台配置 (Windows CUDA 13.0 / macOS Default) ---
+
+[tool.uv]
+index = [
+    # 1. 默认源：清华镜像 (default = true)
+    { name = "pypi", url = "https://pypi.tuna.tsinghua.edu.cn/simple", default = true },
+    # 2. 专用源：Windows PyTorch CUDA 13.0
+    { name = "pytorch-cu130", url = "https://download.pytorch.org/whl/cu130", explicit = true },
+]
+
+[tool.uv.sources]
+# 仅在 Windows 上强制使用 CUDA 13.0 源
+torch = [
+    { index = "pytorch-cu130", marker = "sys_platform == 'win32'" },
+]
+torchvision = [
+    { index = "pytorch-cu130", marker = "sys_platform == 'win32'" },
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
