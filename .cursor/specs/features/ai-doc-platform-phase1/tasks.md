@@ -2,7 +2,7 @@
 id: ai-doc-platform-phase1
 status: IN_PROGRESS
 created: 2026-01-16
-updated: 2026-01-19
+updated: 2026-01-21
 links:
   - ./spec.md
   - ./plan.md
@@ -360,14 +360,50 @@ links:
   - **图片链接必须可追溯**：T097 清洗后 Markdown 中的图片引用（`![](images/xxx.jpg)`）必须保留（至少保留链接信息），否则 T094 无法可靠关联图片与正文位置。
   - **不要在 T094 前做不可逆裁剪**：封面/作者照/版权页等“装饰性图片”的**文件删除或 JSON 剔除**应在 T094 之后、且基于图表识别结果（“有意义图表白名单/装饰图黑名单”）再执行，避免误删图表导致 T094 失败。
   - **建议产出清单工件**：T094 测试中建议落盘“识别为有意义图表的图片列表”（如 `chart_image_paths` / `chart_ids`），供后续阶段做装饰图剔除与 UI 关联。
-|- [ ] T095 [P1] 实现知识库构建功能测试脚本（`test_knowledge_base.py`）
+|- [x] T095 [P1] 实现知识库构建功能测试脚本（真实数据 + hybrid+rerank + 可独立端口部署）（`test_knowledge_base.py`）
 
   **测试范围**:
-  - 文档切分质量验证（边界检测、去重）
-  - ChromaDB 向量写入与检索
-  - 混合检索 RRF 融合效果
-  - 重排序功能验证
-|- [ ] T096 [P1] 实现生成白皮书功能测试脚本（`test_content_generation.py`）
+  - 基于 T094 真实产物（`data/pic_to_json`）进行建库（非 mock）
+  - 文档切分质量验证（结构切分 + 去噪）
+  - ChromaDB 向量写入与检索（Embedding 通过 T023 CallSite 注入）
+  - **BM25 预建索引**：建库阶段生成并落盘 `data/intermediates/kb_chunks/<collection>/<ts>_<build_id>.bm25.json`；查询阶段加载使用
+  - 固定检索策略：Hybrid（BM25+Vector+RRF） + Rerank（通过 T023 CallSite 注入）
+  - 可追溯来源（doc_title / doc_rel_path / source_file_id / original_filename）
+  - **服务端为主**：测试仅调用 API，不在测试脚本内实现业务逻辑
+
+  **相关文件**:
+  - 服务: [`knowledge_base_service.py`](src/application/services/knowledge_base_service.py)
+  - BM25 预建: [`bm25_index_service.py`](src/application/services/bm25_index_service.py)
+  - 路由: [`kb.py`](src/interfaces/api/routes/kb.py)
+  - 测试: [`test_knowledge_base.py`](tests/test_knowledge_base.py)
+  - 运行时: [`llm_runtime_service.py`](src/application/services/llm_runtime_service.py)（T023：embedding/rerank 注入与兼容性修复）
+  - 清理脚本: [`t095-reset-kb.py`](../scripts/t095-reset-kb.py)
+
+  **测试命令（PowerShell）**:
+  ```powershell
+  # 运行 T095 测试（使用真实 data/pic_to_json）
+  uv run pytest -q "tests/test_knowledge_base.py" -k t095 --maxfail=1
+  ```
+
+  **知识库清理/初始化（PowerShell）**:
+  ```powershell
+  # 清理测试 collections（推荐：按前缀）
+  uv run python "scripts/t095-reset-kb.py" --prefix t095_test_ --delete-artifacts --yes
+  ```
+
+  **独立端口部署（PowerShell）**:
+  ```powershell
+  # 建库/管理端口（不加载上传路由，避免 multipart 依赖）
+  $env:LUMO_API_MODE = "kb_admin"
+  $env:LUMO_API_PORT = "8001"
+  uv run python -m src.interfaces.api.main
+
+  # 查询端口（hybrid + rerank）
+  $env:LUMO_API_MODE = "kb_query"
+  $env:LUMO_API_PORT = "8002"
+  uv run python -m src.interfaces.api.main
+  ```
+|- [x] T096 [P1] 实现生成白皮书功能测试脚本（`test_content_generation.py`）
 
   **测试范围**:
   - 模板 section 解析完整性
@@ -376,9 +412,27 @@ links:
   - 图表渲染正确性
   - **大纲润色功能验证**（polish_outline）
 
+  **相关文件**:
+  - 测试: [`test_content_generation.py`](tests/test_content_generation.py)
+  - 生成服务: [`content_generation_service.py`](src/application/services/content_generation_service.py)
+  - 生成路由: [`targets.py`](src/interfaces/api/routes/targets.py)
+  - 调用点: [`content_generation/callsites.py`](src/application/services/content_generation/callsites.py)
+
+  **测试命令（PowerShell）**:
+  ```powershell
+  # 运行 T096 测试（使用真实 data/pic_to_json）
+  uv run pytest -q "tests/test_content_generation.py" -v --tb=short
+  ```
+
+  **E2E 命令（PowerShell）**:
+  ```powershell
+  # 一键执行 E2E（建库→生成 HTML）
+  uv run python "tests/test_content_generation.py" --outline "outline_template_89e9bb6f-ba0d-4366-b41d-9f679bfb158d.md" --cleanup
+  ```
+
 ---
 
-|**版本**: 1.5.0 | **创建**: 2026-01-16 | **最后更新**: 2026-01-19
+|**版本**: 1.5.1 | **创建**: 2026-01-16 | **最后更新**: 2026-01-21
 
 ## 架构变更记录
 

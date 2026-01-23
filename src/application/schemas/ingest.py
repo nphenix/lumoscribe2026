@@ -137,9 +137,9 @@ class KBChunk(BaseModel):
         default=None,
         description="向量嵌入",
     )
-    source_file_id: int = Field(
+    source_file_id: str = Field(
         ...,
-        description="源文件 ID",
+        description="源文件 ID（UUID 字符串）",
     )
     chunk_type: ChunkType = Field(
         default=ChunkType.PARAGRAPH,
@@ -162,9 +162,9 @@ class KBChunk(BaseModel):
 class KBChunkArtifact(BaseModel):
     """知识库 Chunk 产物。"""
 
-    source_file_id: int = Field(
+    source_file_id: str = Field(
         ...,
-        description="源文件 ID",
+        description="源文件 ID（UUID 字符串）",
     )
     chunks: list[KBChunk] = Field(
         ...,
@@ -238,9 +238,9 @@ class SearchResult(BaseModel):
         ...,
         description="检索类型",
     )
-    source_file_id: int = Field(
+    source_file_id: str = Field(
         ...,
-        description="源文件 ID",
+        description="源文件 ID（UUID 字符串）",
     )
     metadata: dict[str, Any] = Field(
         default_factory=dict,
@@ -313,6 +313,10 @@ class SearchMetrics(BaseModel):
     bm25_results: int = Field(
         default=0,
         description="BM25 检索结果数",
+    )
+    bm25_index_used: bool = Field(
+        default=False,
+        description="是否使用了预建 BM25 索引（T095 优化）",
     )
     rerank_applied: bool = Field(
         default=False,

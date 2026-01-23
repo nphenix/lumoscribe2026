@@ -26,8 +26,8 @@ charter: ../constitution.md
 
 ## 技术上下文
 
-**语言/版本**: Python 3.11  
-**主要依赖**: FastAPI 0.109、Pydantic 2.5  
+**语言/版本**: Python 3.12  
+**主要依赖**: FastAPI 0.115+、Pydantic 2.6+  
 **存储**: PostgreSQL 15、Redis 7  
 **测试**: pytest 7.4  
 **目标平台**: Linux 服务器  

@@ -87,6 +87,16 @@ class IntermediateArtifactService:
             else:
                 storage_path.unlink()
 
+        # T095：kb_chunks 预建 BM25 索引文件（与报告同名同目录，后缀 .bm25.json）
+        try:
+            sp = (artifact.storage_path or "").replace("\\", "/")
+            if "intermediates/kb_chunks/" in sp and sp.endswith(".json"):
+                bm25_path = Path("data") / (sp[:-5] + ".bm25.json")
+                if bm25_path.exists():
+                    bm25_path.unlink()
+        except Exception:
+            pass
+
         # 删除数据库记录
         return self.repository.delete(artifact_id)
 

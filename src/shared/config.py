@@ -19,6 +19,12 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
+    # ============== 业务默认参数（面向真实环境，不是测试专用） ==============
+    # 白皮书生成（T096/whitepaper）默认检索参数：前端不传时使用
+    whitepaper_top_k: int = 50
+    whitepaper_rerank_top_n: int = 50
+    whitepaper_polish_outline: bool = False
+
     # LLM 配置
     llm_openai_api_key: str = ""
     llm_openai_base_url: str = ""

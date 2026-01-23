@@ -75,12 +75,14 @@ export default function ProvidersPage() {
     max_tokens: string;
     timeout_seconds: string;
     stream: boolean;
+    thinking_enabled: boolean;
   }>({
     model: '',
     temperature: '0.2',
     max_tokens: '2048',
     timeout_seconds: '60',
     stream: false,
+    thinking_enabled: false,
   });
   const [ollamaConfig, setOllamaConfig] = useState<{
     ollama_model: string;
@@ -136,6 +138,8 @@ export default function ProvidersPage() {
               ? Number.parseInt(openaiConfig.timeout_seconds, 10)
               : undefined,
           stream: openaiConfig.stream,
+          // 中台开关：仅对 MiniMax-M2.1 生效（后端会做模型判断）
+          thinking_enabled: openaiConfig.thinking_enabled,
         };
         config = Object.fromEntries(Object.entries(next).filter(([, v]) => v !== undefined));
       } else if (formData.provider_type === 'ollama') {
@@ -220,6 +224,7 @@ export default function ProvidersPage() {
         max_tokens: '2048',
         timeout_seconds: '60',
         stream: false,
+        thinking_enabled: false,
       });
       setOllamaConfig({
         ollama_model: 'llama3.1',
@@ -260,6 +265,7 @@ export default function ProvidersPage() {
       max_tokens: '2048',
       timeout_seconds: '60',
       stream: false,
+      thinking_enabled: false,
     });
     setOllamaConfig({
       ollama_model: 'llama3.1',
@@ -295,6 +301,7 @@ export default function ProvidersPage() {
       max_tokens: typeof cfg.max_tokens === 'number' ? String(cfg.max_tokens) : '2048',
       timeout_seconds: typeof cfg.timeout_seconds === 'number' ? String(cfg.timeout_seconds) : '60',
       stream: Boolean(cfg.stream),
+      thinking_enabled: cfg.thinking_enabled !== undefined ? Boolean(cfg.thinking_enabled) : false,
     });
     setOllamaConfig({
       ollama_model: cfg.ollama_model || 'llama3.1',
@@ -525,6 +532,21 @@ export default function ProvidersPage() {
                         }
                       />
                       <Label htmlFor="llm_stream">LLM_STREAM</Label>
+                    </div>
+                  </div>
+                  <div className="grid gap-1">
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        id="thinking_enabled"
+                        checked={openaiConfig.thinking_enabled}
+                        onCheckedChange={(checked) =>
+                          setOpenaiConfig((prev) => ({ ...prev, thinking_enabled: checked }))
+                        }
+                      />
+                      <Label htmlFor="thinking_enabled">思考模式（仅 MiniMax-M2.1）</Label>
+                    </div>
+                    <div className="text-xs text-gray-500">
+                      关闭时后端会对 MiniMax-M2.1 自动设置 reasoning_split=true，避免 &lt;think&gt; 输出混入正文。
                     </div>
                   </div>
                 </>

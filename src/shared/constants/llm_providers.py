@@ -12,6 +12,8 @@ PROVIDER_TYPE_CONFIG_KEYS = {
         {"key": "max_tokens", "display": "LLM_MAX_TOKENS"},
         {"key": "timeout_seconds", "display": "LLM_TIMEOUT_SECONDS"},
         {"key": "stream", "display": "LLM_STREAM"},
+        # 中台开关：当前仅对 MiniMax-M2.1 生效（后端会做模型判断）
+        {"key": "thinking_enabled", "display": "THINKING_ENABLED (MiniMax-M2.1 only)"},
     ],
     "ollama": [
         {"key": "ollama_model", "display": "OLLAMA_MODEL"},

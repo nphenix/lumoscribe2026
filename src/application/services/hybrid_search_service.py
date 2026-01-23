@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 from typing import Any
 
 from src.application.schemas.ingest import (
@@ -51,6 +52,8 @@ class HybridSearchService:
         self,
         vector_service: VectorStorageService | None = None,
         collection_name: str = "default",
+        reranker: Any | None = None,
+        bm25_index_storage_path: str | None = None,
     ):
         """初始化混合检索服务。
 
@@ -60,21 +63,37 @@ class HybridSearchService:
         """
         self.vector_service = vector_service or VectorStorageService()
         self.default_collection = collection_name
-        self._reranker = None
+        self._reranker = reranker
+        self._bm25_index_storage_path = bm25_index_storage_path
         self._bm25_index = None
+        self._bm25_index_used = False
+
+    def _get_bm25_index(self):
+        """获取预建 BM25 索引（惰性加载并缓存）。"""
+        if not self._bm25_index_storage_path:
+            return None
+        if self._bm25_index is not None:
+            return self._bm25_index
+        try:
+            from src.application.services.bm25_index_service import BM25Index
+
+            path = self._bm25_index_storage_path.replace("\\", "/").strip()
+            idx_path = Path("data") / path
+            if not idx_path.exists():
+                return None
+            self._bm25_index = BM25Index.load(idx_path)
+            return self._bm25_index
+        except Exception:
+            return None
 
     def _get_reranker(self):
-        """获取重排序模型。"""
+        """获取重排序模型（应由 T023 LLMRuntimeService 注入）。"""
         if self._reranker is None:
-            try:
-                from sentence_transformers import CrossEncoder
-
-                self._reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-12-v2")
-            except ImportError as e:
-                raise HybridSearchError(
-                    message=f"无法导入重排序模型: {e}",
-                    code="reranker_import_error",
-                )
+            raise HybridSearchError(
+                message="未配置重排序模型（请在中台配置 callsite: hybrid_search:rerank，并确保 provider_id 已绑定且 enabled=true）",
+                code="reranker_not_configured",
+                status_code=400,
+            )
         return self._reranker
 
     async def _rerank_results(
@@ -98,35 +117,43 @@ class HybridSearchService:
 
         try:
             reranker = self._get_reranker()
+            docs = [r.content for r in results]
+            loop = asyncio.get_running_loop()
 
-            # 为 cross-encoder 准备 pairs
-            pairs = [(query, result.content) for result in results]
+            def _do():
+                return reranker.rerank(documents=docs, query=query, top_n=top_n)
 
-            # 获取分数
-            loop = asyncio.get_event_loop()
-            scores = await loop.run_in_executor(
-                None,
-                lambda: reranker.predict(pairs),
-            )
+            raw = await loop.run_in_executor(None, _do)
+            if not isinstance(raw, list) or not raw:
+                return results[:top_n]
 
-            # 添加重排序分数
-            for idx, result in enumerate(results):
-                result.metadata["rerank_score"] = float(scores[idx])
-                # 合并原始分数和重排序分数
-                result.metadata["combined_score"] = (
-                    result.score * 0.3 + float(scores[idx]) * 0.7
-                )
+            reranked: list[SearchResult] = []
+            used: set[int] = set()
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                idx = item.get("index")
+                if idx is None:
+                    continue
+                try:
+                    i = int(idx)
+                except Exception:
+                    continue
+                if i < 0 or i >= len(results) or i in used:
+                    continue
+                used.add(i)
+                r = results[i]
+                try:
+                    r.metadata["rerank_score"] = float(item.get("score", 0.0))
+                except Exception:
+                    r.metadata["rerank_score"] = 0.0
+                reranked.append(r)
 
-            # 按综合分数排序
-            results.sort(
-                key=lambda x: x.metadata.get("combined_score", x.score),
-                reverse=True,
-            )
-
-            return results[:top_n]
-
-        except Exception as e:
-            # 如果重排序失败，返回原始结果
+            if not reranked:
+                return results[:top_n]
+            return reranked[:top_n]
+        except Exception:
+            # 重排序失败：严格降级为返回前 top_n（保留融合排序）
             return results[:top_n]
 
     def _rrf_fusion(
@@ -215,7 +242,7 @@ class HybridSearchService:
                     content=raw["document"],
                     score=raw.get("score", 0.0),
                     search_type=SearchStrategy.VECTOR,
-                    source_file_id=raw["metadata"].get("source_file_id", 0),
+                    source_file_id=str(raw["metadata"].get("source_file_id", "")),
                     metadata=raw["metadata"],
                     rank=idx,
                 )
@@ -241,6 +268,32 @@ class HybridSearchService:
         Returns:
             BM25 检索结果
         """
+        # 优先使用“预建 BM25 索引”
+        idx = self._get_bm25_index()
+        if idx is not None:
+            self._bm25_index_used = True
+            raw = idx.search(query=query, top_k=top_k * 2, filter_metadata=filter_metadata)
+            out: list[SearchResult] = []
+            for i, item in enumerate(raw):
+                out.append(
+                    SearchResult(
+                        chunk_id=item["chunk_id"],
+                        content=item["content"],
+                        score=float(item.get("bm25_score_norm", 0.0)),
+                        search_type=SearchStrategy.BM25,
+                        source_file_id=str(item.get("source_file_id", "")),
+                        metadata={
+                            **(item.get("metadata") or {}),
+                            "bm25_score": float(item.get("bm25_score", 0.0)),
+                            "bm25_score_norm": float(item.get("bm25_score_norm", 0.0)),
+                            "bm25_index_used": True,
+                        },
+                        rank=i,
+                    )
+                )
+            return out
+
+        # 兼容降级：如果没有预建索引，再走旧逻辑（查询时动态构建）
         try:
             from llama_index.core import Settings
             from llama_index.core.schema import Document
@@ -296,7 +349,7 @@ class HybridSearchService:
                         content=node.get_content(),
                         score=normalized_score,
                         search_type=SearchStrategy.BM25,
-                        source_file_id=metadata.get("source_file_id", 0),
+                        source_file_id=str(metadata.get("source_file_id", "")),
                         metadata={
                             **metadata,
                             "bm25_score": score,
@@ -334,6 +387,8 @@ class HybridSearchService:
 
         options = options or HybridSearchOptions()
         collection = collection_name or self.default_collection
+        # 每次 search 重置一次
+        self._bm25_index_used = False
 
         # 准备过滤条件
         filter_metadata = options.filter_metadata
@@ -355,9 +410,21 @@ class HybridSearchService:
             filter_metadata=filter_metadata,
         )
 
-        vector_results, bm25_results = await asyncio.gather(
+        vector_results_raw, bm25_results_raw = await asyncio.gather(
             vector_task,
             bm25_task,
+            return_exceptions=True,
+        )
+        # 生成阶段允许“无知识库/无集合”场景：检索异常一律降级为空结果
+        vector_results = (
+            []
+            if isinstance(vector_results_raw, Exception)
+            else (vector_results_raw or [])
+        )
+        bm25_results = (
+            []
+            if isinstance(bm25_results_raw, Exception)
+            else (bm25_results_raw or [])
         )
 
         # 计算指标
@@ -365,6 +432,7 @@ class HybridSearchService:
             total_results=0,
             vector_results=len(vector_results),
             bm25_results=len(bm25_results),
+            bm25_index_used=self._bm25_index_used,
             rerank_applied=options.use_rerank,
         )
 

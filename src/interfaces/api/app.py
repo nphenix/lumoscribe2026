@@ -19,16 +19,6 @@ from src.shared.errors import (
 from src.shared.logging import configure_logging, get_logger
 from src.shared.request_id import get_request_id, new_request_id, set_request_id
 
-from src.interfaces.api.routes.health import router as health_router
-from src.interfaces.api.routes.intermediates import router as intermediates_router
-from src.interfaces.api.routes.jobs import router as jobs_router
-from src.interfaces.api.routes.llm import router as llm_router
-from src.interfaces.api.routes.prompts import router as prompts_router
-from src.interfaces.api.routes.sources import router as sources_router
-from src.interfaces.api.routes.targets import router as targets_router
-from src.interfaces.api.routes.templates import router as templates_router
-
-
 log = get_logger(__name__)
 
 
@@ -155,13 +145,40 @@ def create_app() -> FastAPI:
             ),
         )
 
+    # 路由按模式选择性挂载，避免在 kb_* 模式下导入不必要依赖（例如上传所需 python-multipart）
+    api_mode = os.getenv("LUMO_API_MODE", "full").strip().lower()
+
+    # 始终可用：health（用于探活）
+    from src.interfaces.api.routes.health import router as health_router
+
     app.include_router(health_router, prefix="/v1")
-    app.include_router(intermediates_router, prefix="/v1")
-    app.include_router(jobs_router, prefix="/v1")
-    app.include_router(llm_router, prefix="/v1")
-    app.include_router(prompts_router, prefix="/v1")
-    app.include_router(sources_router, prefix="/v1")
-    app.include_router(targets_router, prefix="/v1")
-    app.include_router(templates_router, prefix="/v1")
+
+    # KB：按模式挂载（支持“建库/查询”两个独立端口部署）
+    if api_mode in {"full", "kb_admin", "kb_query"}:
+        from src.interfaces.api.routes.kb import router_admin as kb_admin_router
+        from src.interfaces.api.routes.kb import router_query as kb_query_router
+
+        if api_mode in {"full", "kb_admin"}:
+            app.include_router(kb_admin_router, prefix="/v1")
+        if api_mode in {"full", "kb_query"}:
+            app.include_router(kb_query_router, prefix="/v1")
+
+    # 其余业务路由：仅 full 模式加载（避免 kb_* 独立服务被无关依赖阻塞）
+    if api_mode == "full":
+        from src.interfaces.api.routes.intermediates import router as intermediates_router
+        from src.interfaces.api.routes.jobs import router as jobs_router
+        from src.interfaces.api.routes.llm import router as llm_router
+        from src.interfaces.api.routes.prompts import router as prompts_router
+        from src.interfaces.api.routes.sources import router as sources_router
+        from src.interfaces.api.routes.targets import router as targets_router
+        from src.interfaces.api.routes.templates import router as templates_router
+
+        app.include_router(intermediates_router, prefix="/v1")
+        app.include_router(jobs_router, prefix="/v1")
+        app.include_router(llm_router, prefix="/v1")
+        app.include_router(prompts_router, prefix="/v1")
+        app.include_router(sources_router, prefix="/v1")
+        app.include_router(targets_router, prefix="/v1")
+        app.include_router(templates_router, prefix="/v1")
 
     return app

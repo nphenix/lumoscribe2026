@@ -2,7 +2,7 @@
 """T094：图转 JSON 批处理（正式运行入口）。
 
 约束：
-- 先完整复制 `data/intermediates_cleaned/` 到 `data/pic_to_json/workspace/` 再处理
+- 先完整复制 `data/intermediates_cleaned/` 到 `data/pic_to_json/` 再处理（输出目录即工作快照）
 - LLM/CallSite/Prompt 必须从 SQLite 获取（DB 为单一事实来源）
 - 不使用 mock，不降级（strict 模式下无有效 JSON 即失败）
 
@@ -148,6 +148,9 @@ async def _run() -> int:
     from src.application.repositories.llm_provider_repository import LLMProviderRepository
     from src.application.repositories.prompt_repository import PromptRepository
     from src.application.services.document_cleaning_service import ChartExtractionService
+    from src.application.services.document_cleaning.t094_pic_to_json_pipeline import (
+        T094PicToJsonPipeline,
+    )
     from src.application.services.llm_runtime_service import LLMRuntimeService
     from src.application.services.prompt_service import PromptService
 
@@ -296,7 +299,12 @@ async def _run() -> int:
             if args.backfill_only:
                 return 0
 
-        report = await service.run_t094_pic_to_json(
+        pipeline = T094PicToJsonPipeline(
+            llm_runtime=llm_runtime,
+            prompt_service=prompt_service,
+            chart_to_json=service.chart_to_json,
+        )
+        report = await pipeline.run(
             input_root=input_root,
             output_root=output_root,
             max_images=max_images,

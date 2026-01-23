@@ -1,681 +1,324 @@
-"""T096: 生成白皮书功能测试脚本。
+"""T096: 白皮书生成（服务端）功能测试。
 
-测试范围：
-- 模板 section 解析完整性
-- RAG 检索上下文质量
-- LLM 生成内容与模板格式对齐
-- 图表渲染正确性
-- 大纲润色功能验证（polish_outline）
+约束（对齐项目要求）：
+- 使用真实数据（依赖 T094 产出 data/pic_to_json），不使用 mock
+- 核心逻辑在服务端（API + Service），测试只做调用与验收
+- 生成流程：按章节/子章节先做 RAG 召回，覆盖不足由 LLM 补全，输出单 HTML 并写入 target_files
 
-使用方法:
+运行：
     pytest tests/test_content_generation.py -v --tb=short
 """
 
 from __future__ import annotations
 
+import argparse
+import json
 import os
+from pathlib import Path
 import sys
-fromfrom unittest.mock import pathlib import Path
- AsyncMock, MagicMock, Mock, patch
+from uuid import uuid4
 
 import pytest
-
-# 确保项目根目录在路径中
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-
-class ContentGenerationTestConfig:
-    """内容生成测试配置类。"""
-
-    def __init__(self):
-        self.template_dir = os.getenv("TEMPLATE_DIR", str(PROJECT_ROOT / "data" / "templates"))
-        self.collection_name = os.getenv("COLLECTION_NAME", "default")
-
-
-class TestContentGenerationService:
-    """内容生成服务测试类。"""
-
-    @pytest.fixture
-    def sample_template(self, tmp_path):
-        """创建示例模板文件。"""
-        template_content = """# 产品白皮书
-
-## 一、产品概述
-
-{{product_overview}}
-
-## 二、核心功能
-
-### 2.1 功能一：智能文档处理
-
-{{function_1_description}}
-
-### 2.2 功能二：图表自动生成
-
-{{function_2_description}}
-
-## 三、技术架构
-
-{{architecture_description}}
-
-## 四、应用场景
-
-{{use_cases}}
-
-## 五、总结
-
-{{conclusion}}
-"""
-        template_dir = tmp_path / "templates"
-        template_dir.mkdir(exist_ok=True)
-        
-        template_path = template_dir / "test_template.md"
-        template_path.write_text(template_content, encoding="utf-8")
-        
-        return template_path
-
-    @pytest.fixture
-    def mock_template(self, tmp_path, sample_template):
-        """创建 Mock 模板实体。"""
-        from src.domain.entities.template import Template, TemplateType
-
-        # 创建模板目录
-        template_dir = tmp_path / "template_storage"
-        template_dir.mkdir(exist_ok=True)
-
-        # 复制模板文件
-        import shutil
-        shutil.copy(sample_template, template_dir / "test_template.md")
-
-        return Template(
-            id="test-template-001",
-            workspace_id="default",
-            original_filename="test_template.md",
-            storage_path=str(template_dir / "test_template.md"),
-            type=TemplateType.CUSTOM,
-            version=1,
-            is_locked=False,
-            preprocess_status="completed",
-            preprocess_result={"placeholder_count": 6},
-        )
-
-    @pytest.fixture
-    def sample_sections(self):
-        """获取示例模板 sections。"""
-        from src.application.services.content_generation_service import TemplateSection
-
-        return [
-            TemplateSection(
-                section_id="section-1",
-                title="产品概述",
-                content="## 产品概述\n\n{{product_overview}}",
-                placeholders=["product_overview"],
-                chart_placeholders=[],
-                order=0,
-            ),
-            TemplateSection(
-                section_id="section-2",
-                title="核心功能",
-                content="## 核心功能\n\n### 2.1 功能一：智能文档处理\n\n{{function_1_description}}\n\n### 2.2 功能二：图表自动生成\n\n{{function_2_description}}",
-                placeholders=["function_1_description", "function_2_description"],
-                chart_placeholders=[],
-                order=1,
-            ),
-        ]
-
-    def test_template_section_parsing(self, mock_template, sample_template):
-        """测试模板 section 解析。"""
-        from src.application.services.content_generation_service import ContentGenerationService
-
-        # Mock 所有依赖
-        mock_template_service = Mock()
-        mock_template_service.get_template = Mock(return_value=mock_template)
-
-        mock_hybrid_search = Mock()
-        mock_llm_runtime = Mock()
-        mock_chart_renderer = Mock()
-        mock_template_repo = Mock()
-
-        service = ContentGenerationService(
-            template_service=mock_template_service,
-            hybrid_search_service=mock_hybrid_search,
-            llm_runtime_service=mock_llm_runtime,
-            chart_renderer_service=mock_chart_renderer,
-            template_repository=mock_template_repo
-        )
-
-        sections = service.parse_template_sections(mock_template)
-
-        assert len(sections) > 0
-
-        # 验证 section 属性
-        for section in sections:
-            assert section.section_id is not None
-            assert section.title is not None
-            assert section.content is not None
-            assert section.order >= 0
-
-    def test_placeholder_extraction(self):
-        """测试占位符提取。"""
-        from src.application.services.content_generation_service import ContentGenerationService
-
-        mock_template_service = Mock()
-        mock_hybrid_search = Mock()
-        mock_llm_runtime = Mock()
-        mock_chart_renderer = Mock()
-        mock_template_repo = Mock()
-
-        service = ContentGenerationService(
-            template_service=mock_template_service,
-            hybrid_search_service=mock_hybrid_search,
-            llm_runtime_service=mock_llm_runtime,
-            chart_renderer_service=mock_chart_renderer,
-            template_repository=mock_template_repo
-        )
-
-        content = "这是 {{placeholder1}} 和 {{placeholder2}} 的内容"
-        placeholders = service._extract_placeholders(content)
-
-        assert len(placeholders) == 2
-        assert "placeholder1" in placeholders
-        assert "placeholder2" in placeholders
-
-    def test_chart_placeholder_extraction(self):
-        """测试图表占位符提取。"""
-        from src.application.services.content_generation_service import ContentGenerationService
-
-        mock_template_service = Mock()
-        mock_hybrid_search = Mock()
-        mock_llm_runtime = Mock()
-        mock_chart_renderer = Mock()
-        mock_template_repo = Mock()
-
-        service = ContentGenerationService(
-            template_service=mock_template_service,
-            hybrid_search_service=mock_hybrid_search,
-            llm_runtime_service=mock_llm_runtime,
-            chart_renderer_service=mock_chart_renderer,
-            template_repository=mock_template_repo
-        )
-
-        content = "图表展示: {{chart:sales_chart}} 和 {{chart:revenue_chart}}"
-        chart_placeholders = service._extract_chart_placeholders(content)
-
-        assert len(chart_placeholders) == 2
-        assert "sales_chart" in chart_placeholders
-        assert "revenue_chart" in chart_placeholders
-
-    @pytest.mark.asyncio
-    async def test_rag_context_assembly(self, sample_sections):
-        """测试 RAG 上下文组装。"""
-        from src.application.services.content_generation_service import ContentGenerationService
-        from src.application.services.hybrid_search_service import HybridSearchService
-        from src.application.schemas.ingest import SearchResult, SearchStrategy
-
-        mock_template_service = Mock()
-        mock_chart_renderer = Mock()
-        mock_template_repo = Mock()
-
-        # Mock 混合检索服务
-        mock_hybrid_search = Mock(spec=HybridSearchService)
-        mock_hybrid_search.search = AsyncMock(return_value=SearchResult(
-            chunk_id="context-1",
-            content="这是检索到的上下文内容，包含产品的详细信息。",
-            score=0.95,
-            search_type=SearchStrategy.VECTOR,
-            source_file_id=1,
-            metadata={"source_file_id": 1},
-            rank=0,
-        ))
-
-        mock_llm_runtime = Mock()
-
-        service = ContentGenerationService(
-            template_service=mock_template_service,
-            hybrid_search_service=mock_hybrid_search,
-            llm_runtime_service=mock_llm_runtime,
-            chart_renderer_service=mock_chart_renderer,
-            template_repository=mock_template_repo
-        )
-
-        # 第一个 section 有一个占位符
-        context = await service.assemble_context_for_section(
-            section=sample_sections[0],
-            collection_name="default"
-        )
-
-        assert context is not None
-        assert len(context) > 0
-
-    @pytest.mark.asyncio
-    async def test_section_content_generation(self, sample_sections):
-        """测试 section 内容生成。"""
-        from src.application.services.content_generation_service import ContentGenerationService
-        from src.application.schemas.chart_spec import ChartConfig
-
-        mock_template_service = Mock()
-        mock_hybrid_search = Mock()
-        mock_chart_renderer = Mock()
-        mock_template_repo = Mock()
-
-        # Mock LLM 运行时
-        mock_runnable = Mock()
-        mock_runnable.invoke = Mock(return_value="这是生成的产品概述内容。")
-        mock_llm_runtime = Mock()
-        mock_llm_runtime.build_runnable_for_callsite = Mock(return_value=mock_runnable)
-
-        service = ContentGenerationService(
-            template_service=mock_template_service,
-            hybrid_search_service=mock_hybrid_search,
-            llm_runtime_service=mock_llm_runtime,
-            chart_renderer_service=mock_chart_renderer,
-            template_repository=mock_template_repo
-        )
-
-        result = service.generate_section_content(
-            section=sample_sections[0],
-            context="产品概述上下文内容",
-            chart_configs={},
-            collection_name="default"
-        )
-
-        assert result.section_id == sample_sections[0].section_id
-        assert result.title == sample_sections[0].title
-        assert result.content is not None
-        assert result.tokens_used >= 0
-
-    @pytest.mark.asyncio
-    async def test_outline_polishing(self):
-        """测试大纲润色功能。"""
-        from src.application.services.content_generation_service import ContentGenerationService
-
-        mock_template_service = Mock()
-        mock_hybrid_search = Mock()
-        mock_chart_renderer = Mock()
-        mock_template_repo = Mock()
-
-        # Mock LLM 运行时
-        mock_runnable = Mock()
-        mock_runnable.invoke = Mock(return_value="""# 产品白皮书
-
-## 一、概述
-## 二、功能
-## 三、技术
-## 四、总结
-""")
-        mock_llm_runtime = Mock()
-        mock_llm_runtime.build_runnable_for_callsite = Mock(return_value=mock_runnable)
-
-        service = ContentGenerationService(
-            template_service=mock_template_service,
-            hybrid_search_service=mock_hybrid_search,
-            llm_runtime_service=mock_llm_runtime,
-            chart_renderer_service=mock_chart_renderer,
-            template_repository=mock_template_repo
-        )
-
-        raw_outline = """# 产品白皮书
-
-## 概述
-
-## 功能
-
-## 技术
-
-## 总结
-"""
-
-        polished = service.polish_outline(raw_outline)
-
-        assert polished is not None
-        assert len(polished) > 0
-
-    def test_outline_polishing_empty_handling(self):
-        """测试空大纲处理。"""
-        from src.application.services.content_generation_service import (
-            ContentGenerationService,
-            ContentGenerationError,
-        )
-
-        mock_template_service = Mock()
-        mock_hybrid_search = Mock()
-        mock_chart_renderer = Mock()
-        mock_template_repo = Mock()
-
-        service = ContentGenerationService(
-            template_service=mock_template_service,
-            hybrid_search_service=mock_hybrid_search,
-            llm_runtime_service=Mock(),
-            chart_renderer_service=mock_chart_renderer,
-            template_repository=mock_template_repo
-        )
-
-        # 测试空大纲
-        with pytest.raises(ContentGenerationError) as exc_info:
-            service.polish_outline("")
-
-        assert exc_info.value.code == "outline_empty"
-
-    @pytest.mark.asyncio
-    async def test_full_content_generation_flow(self, mock_template, sample_sections):
-        """测试完整内容生成流程。"""
-        from src.application.services.content_generation_service import ContentGenerationService
-        from src.application.services.hybrid_search_service import HybridSearchService
-        from src.application.schemas.ingest import SearchResult, SearchStrategy
-
-        mock_template_service = Mock()
-        mock_template_service.get_template = Mock(return_value=mock_template)
-        mock_template_service.preprocess_template = Mock(return_value={
-            "overall_status": "completed",
-            "message": "预处理完成",
-            "placeholders": ["product_overview", "function_1_description"]
-        })
-
-        mock_chart_renderer = Mock()
-        mock_template_repo = Mock()
-
-        # Mock 混合检索
-        mock_hybrid_search = Mock(spec=HybridSearchService)
-        mock_hybrid_search.search = AsyncMock(return_value=SearchResult(
-            chunk_id="full-test-1",
-            content="完整测试的检索内容。",
-            score=0.9,
-            search_type=SearchStrategy.VECTOR,
-            source_file_id=1,
-            metadata={},
-            rank=0,
-        ))
-
-        # Mock LLM
-        mock_runnable = Mock()
-        mock_runnable.invoke = Mock(return_value="生成的内容")
-        mock_llm_runtime = Mock()
-        mock_llm_runtime.build_runnable_for_callsite = Mock(return_value=mock_runnable)
-
-        service = ContentGenerationService(
-            template_service=mock_template_service,
-            hybrid_search_service=mock_hybrid_search,
-            llm_runtime_service=mock_llm_runtime,
-            chart_renderer_service=mock_chart_renderer,
-            template_repository=mock_template_repo
-        )
-
-        # Mock section 解析
-        with patch.object(service, "parse_template_sections", return_value=sample_sections):
-            with patch.object(service, "assemble_context_for_section", return_value="上下文"):
-                with patch.object(service, "generate_section_content", return_value=Mock(
-                    section_id="test",
-                    title="测试",
-                    content="生成内容",
-                    rendered_charts={},
-                    sources=[],
-                    tokens_used=100,
-                    generation_time_ms=500,
-                )):
-                    result = service.generate_content(
-                        template_id="test-template-001",
-                        collection_name="default"
-                    )
-
-        assert result.template_id == "test-template-001"
-        assert result.html_content is not None
-        assert len(result.html_content) > 0
-
-
-class TestMarkdownToHtml:
-    """Markdown 转 HTML 测试类。"""
-
-    @pytest.fixture
-    def content_service(self):
-        """获取内容生成服务（用于测试转换方法）。"""
-        from src.application.services.content_generation_service import ContentGenerationService
-
-        mock_template_service = Mock()
-        mock_hybrid_search = Mock()
-        mock_llm_runtime = Mock()
-        mock_chart_renderer = Mock()
-        mock_template_repo = Mock()
-
-        return ContentGenerationService(
-            template_service=mock_template_service,
-            hybrid_search_service=mock_hybrid_search,
-            llm_runtime_service=mock_llm_runtime,
-            chart_renderer_service=mock_chart_renderer,
-            template_repository=mock_template_repo
-        )
-
-    def test_heading_conversion(self, content_service):
-        """测试标题转换。"""
-        markdown = """# 一级标题
-
-## 二级标题
-
-### 三级标题
-"""
-
-        html = content_service._markdown_to_html(markdown)
-
-        assert "<h1>一级标题</h1>" in html
-        assert "<h2>二级标题</h2>" in html
-        assert "<h3>三级标题</h3>" in html
-
-    def test_bold_conversion(self, content_service):
-        """测试粗体转换。"""
-        markdown = "这是 **粗体文字** 和 __也是粗体__"
-
-        html = content_service._markdown_to_html(markdown)
-
-        assert "<strong>粗体文字</strong>" in html
-        assert "<strong>也是粗体</strong>" in html
-
-    def test_italic_conversion(self, content_service):
-        """测试斜体转换。"""
-        markdown = "这是 *斜体文字* 和 _也是斜体_"
-
-        html = content_service._markdown_to_html(markdown)
-
-        assert "<em>斜体文字</em>" in html
-        assert "<em>也是斜体</em>" in html
-
-    def test_list_conversion(self, content_service):
-        """测试列表转换。"""
-        markdown = """- 项目一
-- 项目二
-- 项目三
-"""
-
-        html = content_service._markdown_to_html(markdown)
-
-        assert "<li>项目一</li>" in html
-
-    def test_ordered_list_conversion(self, content_service):
-        """测试有序列表转换。"""
-        markdown = """1. 第一项
-2. 第二项
-3. 第三项
-"""
-
-        html = content_service._markdown_to_html(markdown)
-
-        assert "<li>第二项</li>" in html
-
-    def test_paragraph_conversion(self, content_service):
-        """测试段落转换。"""
-        markdown = """这是第一段。
-
-这是第二段。
-"""
-
-        html = content_service._markdown_to_html(markdown)
-
-        assert "<p>" in html
-
-
-class TestHtmlRendering:
-    """HTML 渲染测试类。"""
-
-    @pytest.fixture
-    def content_service(self):
-        """获取内容生成服务。"""
-        from src.application.services.content_generation_service import ContentGenerationService
-
-        mock_template_service = Mock()
-        mock_hybrid_search = Mock()
-        mock_llm_runtime = Mock()
-        mock_chart_renderer = Mock()
-        mock_template_repo = Mock()
-
-        return ContentGenerationService(
-            template_service=mock_template_service,
-            hybrid_search_service=mock_hybrid_search,
-            llm_runtime_service=mock_llm_runtime,
-            chart_renderer_service=mock_chart_renderer,
-            template_repository=mock_template_repo
-        )
-
-    def test_default_styles(self, content_service):
-        """测试默认样式生成。"""
-        styles = content_service._get_default_styles()
-
-        assert "body" in styles
-        assert "font-family" in styles
-        assert "h1" in styles or "h2" in styles
-
-    def test_section_html_rendering(self, content_service):
-        """测试 section HTML 渲染。"""
-        from src.application.services.content_generation_service import SectionGenerationResult
-
-        mock_result = SectionGenerationResult(
-            section_id="test-section",
-            title="测试章节",
-            content="这是章节内容",
-            rendered_charts={},
-            sources=[],
-            tokens_used=50,
-            generation_time_ms=100,
-        )
-
-        html_parts = content_service._render_section_html(mock_result)
-
-        assert any("<section" in part for part in html_parts)
-        assert any("test-section" in part for part in html_parts)
-
-    def test_final_html_rendering(self, content_service, mock_template):
-        """测试最终 HTML 渲染。"""
-        from src.application.services.content_generation_service import SectionGenerationResult
-        from src.domain.entities.template import TemplateType
-
-        mock_template.type = TemplateType.CUSTOM
-
-        section_results = [
-            SectionGenerationResult(
-                section_id="section-1",
-                title="第一章",
-                content="第一章内容",
-                rendered_charts={},
-                sources=[],
-                tokens_used=50,
-                generation_time_ms=100,
-            ),
-            SectionGenerationResult(
-                section_id="section-2",
-                title="第二章",
-                content="第二章内容",
-                rendered_charts={},
-                sources=[],
-                tokens_used=60,
-                generation_time_ms=120,
-            ),
-        ]
-
-        html = content_service.render_final_html(mock_template, section_results)
-
-        assert "<!DOCTYPE html>" in html
-        assert "<html" in html
-        assert "<head>" in html
-        assert "<body>" in html
-        assert "第一章" in html
-        assert "第二章" in html
-
-
-class TestChartRendering:
-    """图表渲染测试类。"""
-
-    @pytest.fixture
-    def chart_renderer_service(self):
-        """获取图表渲染服务。"""
-        from src.application.services.chart_renderer_service import ChartRendererService
-
-        return ChartRendererService()
-
-    @pytest.fixture
-    def chart_spec(self):
-        """获取图表规格。"""
-        from src.application.schemas.chart_spec import ChartConfig, ChartType
-
-        return ChartConfig(
-            chart_id="test_chart",
-            chart_type=ChartType.BAR,
-            title="测试图表",
-            data={
-                "x_axis": {"label": "类别", "values": ["A", "B", "C"]},
-                "y_axis": {"label": "数值", "values": [10, 20, 30]},
-            },
-        )
-
-    def test_echarts_rendering(self, chart_renderer_service, chart_spec):
-        """测试 ECharts 渲染。"""
-        result = chart_renderer_service.render_template_snippet(
-            config=chart_spec,
-            library="echarts"
-        )
-
-        assert result is not None
-        assert result.container_html is not None
-        assert result.script_html is not None
-        assert "test_chart" in result.container_html or "test_chart" in result.script_html
-
-    def test_chart_js_rendering(self, chart_renderer_service, chart_spec):
-        """测试 Chart.js 渲染。"""
-        result = chart_renderer_service.render_template_snippet(
-            config=chart_spec,
-            library="chartjs"
-        )
-
-        assert result is not None
-        assert result.container_html is not None
-
-    def test_different_chart_types(self, chart_renderer_service):
-        """测试不同图表类型渲染。"""
-        from src.application.schemas.chart_spec import ChartConfig, ChartType
-
-        chart_types = [
-            ChartType.BAR,
-            ChartType.LINE,
-            ChartType.PIE,
-            ChartType.SCATTER,
-        ]
-
-        for chart_type in chart_types:
-            config = ChartConfig(
-                chart_id=f"test_{chart_type.value}",
-                chart_type=chart_type,
-                title=f"测试{chart_type.value}",
-                data={
-                    "x_axis": {"label": "X", "values": ["1", "2", "3"]},
-                    "y_axis": {"label": "Y", "values": [1, 2, 3]},
-                },
-            )
-
-            result = chart_renderer_service.render_template_snippet(
-                config=config,
-                library="echarts"
-            )
-
-            assert result is not None, f"Failed to render {chart_type}"
+from fastapi.testclient import TestClient
+
+# 允许直接用 `python tests/test_content_generation.py` 运行（不依赖 pytest 自动注入 PYTHONPATH）
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from src.interfaces.api.app import create_app
+
+
+def _pick_outline_draft() -> Path:
+    drafts_dir = Path("data") / "Templates" / "drafts"
+    if not drafts_dir.exists():
+        raise RuntimeError(f"缺少 drafts 目录: {drafts_dir.as_posix()}")
+    items = sorted(drafts_dir.glob("*.md"))
+    if not items:
+        raise RuntimeError(f"drafts 目录下未找到任何 .md: {drafts_dir.as_posix()}")
+    return items[0]
+
+
+def _extract_chapter_titles(md: str) -> list[str]:
+    titles: list[str] = []
+    for line in (md or "").replace("\r\n", "\n").split("\n"):
+        s = line.strip()
+        if s.startswith("## "):
+            titles.append(s[3:].strip())
+    return [t for t in titles if t]
+
+
+def _extract_some_outline_items(md: str, limit: int = 6) -> list[str]:
+    out: list[str] = []
+    for line in (md or "").replace("\r\n", "\n").split("\n"):
+        s = line.strip()
+        if s.startswith("-"):
+            txt = s.lstrip("-").strip()
+            if txt:
+                out.append(txt)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def test_t096_whitepaper_generate_from_drafts_real_data_real_llm():
+    input_root = Path("data") / "pic_to_json"
+    if not input_root.exists():
+        raise RuntimeError(f"缺少真实数据目录，请先跑 T094：{input_root.as_posix()}")
+
+    outline_path = _pick_outline_draft()
+    outline_text = outline_path.read_text(encoding="utf-8", errors="replace")
+    chapter_titles = _extract_chapter_titles(outline_text)
+    assert chapter_titles, "outline drafts 中未解析到任何章节（## ...）"
+    probe_items = _extract_some_outline_items(outline_text, limit=6)
+    assert probe_items, "outline drafts 中未解析到任何子章节条目（- ...）"
+
+    collection_name = f"t096_test_{uuid4().hex[:8]}"
+
+    # 1) 先建库（kb_admin）
+    os.environ["LUMO_API_MODE"] = "kb_admin"
+    app_admin = create_app()
+    client_admin = TestClient(app_admin)
+    resp = client_admin.post(
+        "/v1/kb/build",
+        json={
+            "input_root": input_root.as_posix(),
+            "collection_name": collection_name,
+            "recreate": True,
+            # 覆盖多篇文档，避免生成阶段“只有一个来源文档”
+            "max_docs": 6,
+            "chunk_size": 900,
+            "chunk_overlap": 80,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    # 2) 生成白皮书（full）
+    os.environ["LUMO_API_MODE"] = "full"
+    app_full = create_app()
+    client_full = TestClient(app_full)
+    resp2 = client_full.post(
+        "/v1/targets/whitepaper/generate",
+        json={
+            "workspace_id": "default",
+            "collection_name": collection_name,
+            "outline_filename": outline_path.name,
+            # 为了保证“严格按模板标题”可断言，测试中关闭润色（润色可能改变标题措辞）
+            "polish_outline": False,
+            "top_k": 6,
+            "rerank_top_n": 5,
+            "score_threshold": 0.15,
+        },
+    )
+    assert resp2.status_code == 200, resp2.text
+    payload = resp2.json()
+    assert payload.get("target_id")
+    assert payload.get("storage_path")
+    assert payload.get("coverage") and isinstance(payload["coverage"], dict)
+
+    # 3) 校验 HTML 文件已落盘
+    storage_path = payload["storage_path"]
+    html_path = Path("data") / storage_path
+    assert html_path.exists(), f"HTML 未落盘: {html_path.as_posix()}"
+    html = html_path.read_text(encoding="utf-8", errors="ignore")
+    assert "<!DOCTYPE html>" in html
+
+    # 4) 章节标题必须全部出现（由模板解析产生，不能缺失）
+    for t in chapter_titles:
+        assert t in html, f"章节标题缺失: {t}"
+
+    # 5) 抽查若干子章节条目必须出现（严格对齐大纲骨架）
+    for it in probe_items[:3]:
+        # 允许 HTML 标签包裹，但文本应出现
+        assert it in html, f"子章节条目缺失或被改写: {it}"
+
+    # 6) 覆盖信息可观测（用于评估 RAG 召回是否理想）
+    sections = payload["coverage"].get("sections") or []
+    assert sections and isinstance(sections, list)
+    # 至少应包含 outline_item 覆盖记录
+    any_item = False
+    any_bm25_used = False
+    for s in sections:
+        cov = s.get("coverage") or []
+        for c in cov:
+            if c.get("type") == "outline_item":
+                any_item = True
+                if c.get("bm25_index_used") is True:
+                    any_bm25_used = True
+                break
+    assert any_item is True
+    assert any_bm25_used is True
+
+    # 7) 清理：删除生成的目标文件
+    tid = payload["target_id"]
+    resp3 = client_full.delete(f"/v1/targets/{tid}")
+    assert resp3.status_code == 200, resp3.text
+
+    # 8) 清理：删除测试 collection（避免污染）
+    resp4 = client_admin.delete(f"/v1/kb/collections/{collection_name}")
+    assert resp4.status_code == 200, resp4.text
+
+
+def test_t096_outline_polish_real_llm_smoke():
+    # 该测试验证 callsite `content_generation:polish_outline` 可在真实环境执行
+    os.environ["LUMO_API_MODE"] = "full"
+
+    # 通过生成端点间接触发 polish（使用 drafts 文件作为输入）
+    outline_path = _pick_outline_draft()
+    input_root = Path("data") / "pic_to_json"
+    if not input_root.exists():
+        pytest.skip("缺少 data/pic_to_json，无法跑端到端真实环境测试")
+
+    collection_name = f"t096_polish_{uuid4().hex[:8]}"
+
+    os.environ["LUMO_API_MODE"] = "kb_admin"
+    app_admin = create_app()
+    client_admin = TestClient(app_admin)
+    resp = client_admin.post(
+        "/v1/kb/build",
+        json={
+            "input_root": input_root.as_posix(),
+            "collection_name": collection_name,
+            "recreate": True,
+            "max_docs": 6,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    os.environ["LUMO_API_MODE"] = "full"
+    app_full2 = create_app()
+    client_full = TestClient(app_full2)
+    resp2 = client_full.post(
+        "/v1/targets/whitepaper/generate",
+        json={
+            "workspace_id": "default",
+            "collection_name": collection_name,
+            "outline_filename": outline_path.name,
+            "polish_outline": True,
+            "top_k": 3,
+            "rerank_top_n": 3,
+        },
+    )
+    assert resp2.status_code == 200, resp2.text
+    payload = resp2.json()
+    assert payload.get("document_title")
+
+    # 清理：删除目标文件与 collection
+    tid = payload["target_id"]
+    client_full.delete(f"/v1/targets/{tid}")
+    client_admin.delete(f"/v1/kb/collections/{collection_name}")
+
+
+def run_t096_e2e(
+    *,
+    outline_filename: str,
+    workspace_id: str = "default",
+    collection_name: str | None = None,
+    input_root: str = "data/pic_to_json",
+    max_docs: int = 6,
+    recreate: bool = True,
+    polish_outline: bool = False,
+    top_k: int = 10,
+    rerank_top_n: int = 5,
+    score_threshold: float | None = 0.15,
+    cleanup: bool = False,
+) -> dict:
+    """一键 E2E：建库→生成 HTML→打印结果（可选清理）。"""
+    root = Path(input_root)
+    if not root.exists():
+        raise RuntimeError(f"缺少真实数据目录，请先跑 T094：{root.as_posix()}")
+    drafts_dir = Path("data") / "Templates" / "drafts"
+    outline_path = drafts_dir / outline_filename
+    if not outline_path.exists():
+        raise RuntimeError(f"缺少大纲模板文件：{outline_path.as_posix()}")
+
+    col = collection_name or f"t096_{uuid4().hex[:8]}"
+
+    # 1) kb_admin build（进程内）
+    os.environ["LUMO_API_MODE"] = "kb_admin"
+    app_admin = create_app()
+    client_admin = TestClient(app_admin)
+    resp = client_admin.post(
+        "/v1/kb/build",
+        json={
+            "input_root": root.as_posix(),
+            "collection_name": col,
+            "recreate": recreate,
+            "max_docs": max_docs,
+            "chunk_size": 900,
+            "chunk_overlap": 80,
+        },
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"kb build failed: {resp.status_code} {resp.text}")
+
+    # 2) full generate（进程内）
+    os.environ["LUMO_API_MODE"] = "full"
+    app_full = create_app()
+    client_full = TestClient(app_full)
+    resp2 = client_full.post(
+        "/v1/targets/whitepaper/generate",
+        json={
+            "workspace_id": workspace_id,
+            "collection_name": col,
+            "outline_filename": outline_filename,
+            # 严格按模板列表格式生成：默认不润色
+            "polish_outline": polish_outline,
+            "top_k": top_k,
+            "rerank_top_n": rerank_top_n,
+            "score_threshold": score_threshold,
+        },
+    )
+    if resp2.status_code != 200:
+        raise RuntimeError(f"whitepaper generate failed: {resp2.status_code} {resp2.text}")
+
+    payload = resp2.json()
+    target_id = payload.get("target_id")
+    storage_path = payload.get("storage_path")
+    if not target_id or not storage_path:
+        raise RuntimeError(f"invalid generate response: {payload}")
+
+    html_path = Path("data") / str(storage_path)
+    if not html_path.exists():
+        raise RuntimeError(f"HTML 未落盘: {html_path.as_posix()}")
+
+    # 3) 可选清理
+    if cleanup:
+        client_full.delete(f"/v1/targets/{target_id}")
+        client_admin.delete(f"/v1/kb/collections/{col}")
+
+    return payload
+
+
+def _main() -> int:
+    parser = argparse.ArgumentParser(description="T096 one-shot E2E (kb build -> generate html)")
+    parser.add_argument(
+        "--outline",
+        default="outline_template_89e9bb6f-ba0d-4366-b41d-9f679bfb158d.md",
+        help="drafts 目录下的大纲文件名",
+    )
+    parser.add_argument("--collection", default="", help="collection 名称（为空则自动生成）")
+    parser.add_argument("--max-docs", type=int, default=6, help="建库最多处理多少个 full.md（默认 6）")
+    parser.add_argument("--no-recreate", action="store_true", help="建库时不重建 collection")
+    parser.add_argument("--polish-outline", action="store_true", help="是否润色大纲（可能改变标题，不建议严格模式下开启）")
+    parser.add_argument("--cleanup", action="store_true", help="完成后清理 target 与 collection（默认不清理，会保留生成的 html）")
+    args = parser.parse_args()
+
+    payload = run_t096_e2e(
+        outline_filename=args.outline,
+        collection_name=(args.collection.strip() or None),
+        max_docs=max(1, int(args.max_docs)),
+        recreate=(not args.no_recreate),
+        polish_outline=bool(args.polish_outline),
+        cleanup=bool(args.cleanup),
+    )
+
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    sp = payload.get("storage_path")
+    if sp:
+        print("LOCAL_HTML:", str((Path.cwd() / "data" / str(sp)).resolve()))
+    return 0
 
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v", "--tb=short"])
+    raise SystemExit(_main())

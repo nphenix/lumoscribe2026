@@ -94,7 +94,7 @@ class DocumentChunkingService:
             )
         return self._semantic_splitter
 
-    def _generate_chunk_id(self, source_file_id: int, chunk_index: int) -> str:
+    def _generate_chunk_id(self, source_file_id: str, chunk_index: int) -> str:
         """生成 chunk ID。
 
         Args:
@@ -272,7 +272,7 @@ class DocumentChunkingService:
     def _create_chunks_from_blocks(
         self,
         blocks: list[dict[str, Any]],
-        source_file_id: int,
+        source_file_id: str,
         chunk_size: int | None = None,
         chunk_overlap: int | None = None,
     ) -> list[KBChunk]:
@@ -402,7 +402,13 @@ class DocumentChunkingService:
             ChunkingServiceError: 切分失败
         """
         options = options or ChunkingOptions()
-        source_file_id = metadata.get("source_file_id", 0)
+        source_file_id = (
+            str(metadata.get("source_file_id")).strip()
+            if metadata.get("source_file_id") is not None
+            else ""
+        )
+        if not source_file_id:
+            source_file_id = "unknown"
 
         try:
             # 根据策略选择切分方法
@@ -450,10 +456,17 @@ class DocumentChunkingService:
         # 步骤 3: 创建 chunks
         chunk_size = options.chunk_size or self.config.chunk_size
         chunk_overlap = options.chunk_overlap or self.config.chunk_overlap
+        source_file_id = (
+            str(metadata.get("source_file_id")).strip()
+            if metadata.get("source_file_id") is not None
+            else ""
+        )
+        if not source_file_id:
+            source_file_id = "unknown"
 
         chunks = self._create_chunks_from_blocks(
             merged_blocks,
-            metadata.get("source_file_id", 0),
+            source_file_id,
             chunk_size,
             chunk_overlap,
         )
@@ -489,7 +502,13 @@ class DocumentChunkingService:
         # 使用语义切分器
         nodes = splitter.get_nodes_from_documents([doc])
 
-        source_file_id = metadata.get("source_file_id", 0)
+        source_file_id = (
+            str(metadata.get("source_file_id")).strip()
+            if metadata.get("source_file_id") is not None
+            else ""
+        )
+        if not source_file_id:
+            source_file_id = "unknown"
         chunks = []
 
         for idx, node in enumerate(nodes):
@@ -552,7 +571,13 @@ class DocumentChunkingService:
         doc = LIDocument(text=text, metadata=metadata)
         nodes = splitter.get_nodes_from_documents([doc])
 
-        source_file_id = metadata.get("source_file_id", 0)
+        source_file_id = (
+            str(metadata.get("source_file_id")).strip()
+            if metadata.get("source_file_id") is not None
+            else ""
+        )
+        if not source_file_id:
+            source_file_id = "unknown"
         chunks = []
 
         for idx, node in enumerate(nodes):
@@ -592,7 +617,13 @@ class DocumentChunkingService:
             KBChunk 列表
         """
         chunk_size = options.chunk_size or self.config.chunk_size
-        source_file_id = metadata.get("source_file_id", 0)
+        source_file_id = (
+            str(metadata.get("source_file_id")).strip()
+            if metadata.get("source_file_id") is not None
+            else ""
+        )
+        if not source_file_id:
+            source_file_id = "unknown"
 
         chunks = []
         start = 0

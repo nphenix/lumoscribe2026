@@ -16,6 +16,7 @@ from typing import Any
 
 import chromadb
 from chromadb.config import Settings as ChromaSettings
+from chromadb.errors import NotFoundError
 
 from src.application.schemas.ingest import (
     KBChunk,
@@ -53,6 +54,7 @@ class VectorStorageService:
         self,
         persist_directory: str | Path | None = None,
         collection_kwargs: dict[str, Any] | None = None,
+        embedding_model: Any | None = None,
     ):
         """初始化向量存储服务。
 
@@ -68,7 +70,7 @@ class VectorStorageService:
 
         self._client: chromadb.PersistentClient | None = None
         self._collection_kwargs = collection_kwargs or {}
-        self._embed_model = None
+        self._embedding_model = embedding_model
 
     def _get_client(self) -> chromadb.PersistentClient:
         """获取 ChromaDB 客户端。"""
@@ -83,21 +85,23 @@ class VectorStorageService:
         return self._client
 
     def _get_embed_model(self):
-        """获取嵌入模型。"""
-        if self._embed_model is None:
-            try:
-                from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+        """获取嵌入模型（优先使用注入的 T023 embedding callsite 模型）。"""
+        if self._embedding_model is not None:
+            return self._embedding_model
 
-                settings = get_settings()
-                self._embed_model = HuggingFaceEmbedding(
-                    model_name="BAAI/bge-large-zh-v1.5",
-                )
-            except ImportError as e:
-                raise VectorStorageError(
-                    message=f"无法导入嵌入模型: {e}",
-                    code="embed_model_import_error",
-                )
-        return self._embed_model
+        # 兼容旧行为：未注入 embedding 时回退到 HuggingFaceEmbedding
+        try:
+            from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+
+            self._embedding_model = HuggingFaceEmbedding(
+                model_name="BAAI/bge-large-zh-v1.5",
+            )
+            return self._embedding_model
+        except ImportError as e:
+            raise VectorStorageError(
+                message=f"无法导入嵌入模型: {e}",
+                code="embed_model_import_error",
+            ) from e
 
     def _ensure_collection(
         self,
@@ -117,13 +121,16 @@ class VectorStorageService:
 
         try:
             collection = client.get_collection(name=collection_name)
-        except chromadb.NotFoundError:
+        except NotFoundError:
             # 创建集合
             if embedding_model is None:
                 embedding_model = self._get_embed_model()
 
-            # 获取嵌入维度
-            test_embedding = embedding_model.get_text_embedding("test")
+            # 获取嵌入维度（兼容 llama_index / LangChain embedding 协议）
+            try:
+                test_embedding = embedding_model.get_text_embedding("test")
+            except Exception:
+                test_embedding = embedding_model.embed_query("test")
             dimension = len(test_embedding)
 
             collection = client.create_collection(
@@ -147,12 +154,30 @@ class VectorStorageService:
             嵌入向量
         """
         model = self._get_embed_model()
-        # 在执行器中运行以避免阻塞
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None,
-            lambda: model.get_text_embedding(text),
-        )
+        loop = asyncio.get_running_loop()
+
+        def _do() -> list[float]:
+            # 优先 LangChain EmbeddingProtocol
+            if hasattr(model, "embed_query"):
+                return list(model.embed_query(text))
+            return list(model.get_text_embedding(text))
+
+        return await loop.run_in_executor(None, _do)
+
+    async def _generate_embeddings(self, texts: list[str]) -> list[list[float]]:
+        """批量生成嵌入向量（优先走 embed_documents）。"""
+        if not texts:
+            return []
+        model = self._get_embed_model()
+        loop = asyncio.get_running_loop()
+
+        def _do() -> list[list[float]]:
+            if hasattr(model, "embed_documents"):
+                return [list(x) for x in model.embed_documents(texts)]
+            # 兼容 llama_index embedding（没有批量 API）
+            return [list(model.get_text_embedding(t)) for t in texts]
+
+        return await loop.run_in_executor(None, _do)
 
     async def upsert_vectors(
         self,
@@ -180,47 +205,32 @@ class VectorStorageService:
             # 确保集合存在
             collection = self._ensure_collection(collection_name)
 
-            # 准备数据
-            ids = []
-            documents = []
-            metadatas = []
-            embeddings = []
-
-            for chunk in chunks:
-                chunk_id = chunk.chunk_id
-                content = chunk.content
-
-                # 使用现有嵌入或生成新嵌入
-                if chunk.embedding is not None and not skip_embedding:
-                    embedding = chunk.embedding
-                else:
-                    # 检查 chunk 是否已有嵌入
-                    if chunk.embedding is not None:
-                        embedding = chunk.embedding
-                    else:
-                        # 生成嵌入
-                        embedding = await self._generate_embedding(content)
-
-                ids.append(chunk_id)
-                documents.append(content)
-                metadatas.append(
-                    {
-                        **chunk.metadata,
-                        "source_file_id": chunk.source_file_id,
-                        "chunk_type": chunk.chunk_type.value,
-                        "chunk_index": chunk.chunk_index,
-                        "created_at": datetime.now().isoformat(),
-                    }
-                )
-                embeddings.append(embedding)
-
-            # 批量写入
             total_upserted = 0
-            for i in range(0, len(ids), self.BATCH_SIZE):
-                batch_ids = ids[i : i + self.BATCH_SIZE]
-                batch_docs = documents[i : i + self.BATCH_SIZE]
-                batch_metas = metadatas[i : i + self.BATCH_SIZE]
-                batch_embeds = embeddings[i : i + self.BATCH_SIZE]
+            now = datetime.now().isoformat()
+
+            for i in range(0, len(chunks), self.BATCH_SIZE):
+                batch = chunks[i : i + self.BATCH_SIZE]
+                batch_ids = [c.chunk_id for c in batch]
+                batch_docs = [c.content for c in batch]
+                batch_metas = [
+                    {
+                        **c.metadata,
+                        "source_file_id": c.source_file_id,
+                        "chunk_type": c.chunk_type.value,
+                        "chunk_index": c.chunk_index,
+                        "created_at": now,
+                    }
+                    for c in batch
+                ]
+
+                if skip_embedding and all(c.embedding is not None for c in batch):
+                    batch_embeds = [c.embedding for c in batch]  # type: ignore[list-item]
+                else:
+                    # 如果 chunk 自带 embedding 且 skip_embedding=False，优先使用；否则批量生成
+                    if all(c.embedding is not None for c in batch):
+                        batch_embeds = [c.embedding for c in batch]  # type: ignore[list-item]
+                    else:
+                        batch_embeds = await self._generate_embeddings(batch_docs)
 
                 collection.upsert(
                     ids=batch_ids,
@@ -302,12 +312,10 @@ class VectorStorageService:
 
             return formatted_results
 
-        except chromadb.NotFoundError:
-            raise VectorStorageError(
-                message=f"集合不存在: {collection_name}",
-                code="collection_not_found",
-                status_code=404,
-            )
+        except NotFoundError:
+            # 生成阶段（如白皮书生成）允许“无知识库”场景：此处降级为空结果，
+            # 由上层逻辑决定是否让 LLM 纯补全。
+            return []
         except Exception as e:
             raise VectorStorageError(
                 message=f"搜索失败: {e}",
@@ -378,7 +386,7 @@ class VectorStorageService:
                 updated_at=metadata.get("updated_at"),
             )
 
-        except chromadb.NotFoundError:
+        except NotFoundError:
             return None
 
     async def delete_collection(
@@ -398,7 +406,7 @@ class VectorStorageService:
             client.delete_collection(name=collection_name)
             return True
 
-        except chromadb.NotFoundError:
+        except NotFoundError:
             return False
         except Exception as e:
             raise VectorStorageError(
@@ -409,7 +417,7 @@ class VectorStorageService:
     async def delete_by_file_id(
         self,
         collection_name: str,
-        source_file_id: int,
+        source_file_id: str,
     ) -> int:
         """按源文件 ID 删除向量。
 
@@ -436,7 +444,7 @@ class VectorStorageService:
 
             return 0
 
-        except chromadb.NotFoundError:
+        except NotFoundError:
             return 0
         except Exception as e:
             raise VectorStorageError(
@@ -471,7 +479,7 @@ class VectorStorageService:
             collection = client.get_collection(name=collection_name)
             return collection.count()
 
-        except chromadb.NotFoundError:
+        except NotFoundError:
             return 0
 
     async def reset(self) -> bool:

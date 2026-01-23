@@ -22,6 +22,29 @@ class IntermediateArtifactRepository:
         self.db.refresh(artifact)
         return artifact
 
+    def update(self, artifact: IntermediateArtifact) -> IntermediateArtifact:
+        """更新中间态产物。"""
+        self.db.add(artifact)
+        self.db.commit()
+        self.db.refresh(artifact)
+        return artifact
+
+    def update_extra_metadata(
+        self,
+        artifact_id: str,
+        *,
+        extra_metadata: str | None,
+    ) -> IntermediateArtifact | None:
+        """仅更新 extra_metadata 字段（用于进度观测等高频更新）。"""
+        artifact = self.get_by_id(artifact_id)
+        if artifact is None:
+            return None
+        artifact.extra_metadata = extra_metadata
+        self.db.add(artifact)
+        self.db.commit()
+        self.db.refresh(artifact)
+        return artifact
+
     def get_by_id(self, artifact_id: str) -> IntermediateArtifact | None:
         """根据ID获取中间态产物。"""
         return self.db.query(IntermediateArtifact).filter(IntermediateArtifact.id == artifact_id).first()

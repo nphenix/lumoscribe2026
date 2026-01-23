@@ -33,6 +33,7 @@ dependencies = [
     # PyTorch（RTX 50系/Blackwell架构支持）
     "torch>=2.4.0",
     "torchvision>=0.19.0",
+    "python-multipart>=0.0.21",
 ]
 
 # --- uv 跨平台配置 (Windows CUDA 13.0 / macOS Default) ---

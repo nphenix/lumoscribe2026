@@ -271,7 +271,8 @@ class FlagEmbeddingEmbeddings:
             return self._embed_via_api(text)
         if self._model is None:
             self._load_local_model()
-        return self._model.encode([text], normalize_embeddings=True)[0].tolist()
+        vecs = self.embed_documents([text])
+        return vecs[0] if vecs else []
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         """获取文档列表的向量表示。"""
@@ -279,10 +280,37 @@ class FlagEmbeddingEmbeddings:
             return self._embed_batch_via_api(texts)
         if self._model is None:
             self._load_local_model()
-        embeddings = self._model.encode(
-            texts, normalize_embeddings=True, batch_size=32
-        )
-        return embeddings.tolist()
+        if not texts:
+            return []
+
+        # FlagEmbedding/Transformers 版本差异较大：此处避免传 normalize_embeddings，
+        # 统一在封装层做 L2 normalize，保证跨版本稳定。
+        try:
+            embeddings = self._model.encode(texts, batch_size=32)
+        except TypeError:
+            embeddings = self._model.encode(texts)
+
+        try:
+            mat = embeddings.tolist()
+        except Exception:
+            mat = [list(x) for x in embeddings]
+
+        def _l2_normalize(v: list[float]) -> list[float]:
+            import math
+
+            s = 0.0
+            for x in v:
+                try:
+                    fx = float(x)
+                except Exception:
+                    fx = 0.0
+                s += fx * fx
+            if s <= 0.0:
+                return [0.0 for _ in v]
+            inv = 1.0 / math.sqrt(s)
+            return [float(x) * inv for x in v]
+
+        return [_l2_normalize(v) for v in mat]
 
     def _embed_via_api(self, text: str) -> list[float]:
         """通过 API 获取文本向量。"""
@@ -324,6 +352,100 @@ class LLMRuntimeService:
     MODEL_KIND_RERANK = "rerank"
     MODEL_KIND_MULTIMODAL = "multimodal"
 
+    @staticmethod
+    def _parse_bool_maybe(v: Any) -> bool | None:
+        if v is None:
+            return None
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            return bool(v)
+        s = str(v).strip().lower()
+        if not s:
+            return None
+        if s in {"1", "true", "yes", "y", "on", "enable", "enabled"}:
+            return True
+        if s in {"0", "false", "no", "n", "off", "disable", "disabled"}:
+            return False
+        return None
+
+    @staticmethod
+    def _is_minimax_m21(model_name: str | None) -> bool:
+        """判断是否为 MiniMax-M2.1 家族模型（包括 lightning 变体）。"""
+        if not model_name:
+            return False
+        s = str(model_name).strip().lower()
+        return "minimax-m2.1" in s
+
+    @staticmethod
+    def _normalize_device(device: Any) -> str:
+        """规范化 device 配置，提升中台配置容错。
+
+        说明：部分用户习惯写 "gpu"/"cuda0" 等，但 PyTorch 只接受 "cuda"/"cuda:0"/"cpu" 等。
+        """
+        if device is None:
+            return "cpu"
+        s = str(device).strip().lower()
+        if not s:
+            return "cpu"
+        if s in {"gpu", "cuda", "nvidia"}:
+            return "cuda"
+        if s in {"gpu:0", "cuda0", "cuda:0"}:
+            return "cuda:0"
+        if s.startswith("gpu:"):
+            # gpu:1 -> cuda:1
+            return "cuda:" + s.split("gpu:", 1)[1]
+        return s
+
+    def _apply_thinking_mode_for_openai_compatible(
+        self,
+        *,
+        provider: LLMProvider,
+        model_name: str | None,
+        extra_body: Any,
+        thinking_enabled: bool | None,
+    ) -> dict[str, Any] | None:
+        """按“思考模式开关”调整 extra_body（当前仅对 MiniMax-M2.1 生效）。
+
+        约定：
+        - thinking_enabled=True：允许思考输出（不注入 reasoning_split）
+        - thinking_enabled=False：隐藏思考输出（对 M2.1 注入 reasoning_split=True，使 thinking 不混入 content）
+        - thinking_enabled=None：对 M2.1 默认按 False 处理
+        """
+        eb: dict[str, Any] = {}
+        if isinstance(extra_body, dict):
+            eb = dict(extra_body)
+        elif extra_body is not None:
+            # 容错：extra_body 类型不正确时忽略，避免影响主流程
+            logger.warning(
+                "invalid extra_body type, ignored",
+                extra={
+                    "provider_id": getattr(provider, "id", None),
+                    "provider_key": getattr(provider, "key", None),
+                    "model_name": model_name,
+                    "extra_body_type": type(extra_body).__name__,
+                },
+            )
+            eb = {}
+
+        is_m21 = self._is_minimax_m21(model_name)
+        if not is_m21:
+            # 仅对 M2.1 生效：避免误把 reasoning_split 透传到其他 OpenAI-compatible 服务导致 400
+            if "reasoning_split" in eb:
+                eb.pop("reasoning_split", None)
+            return eb or None
+
+        # M2.1 默认关闭思考输出（避免 <think> 混入 content）
+        if thinking_enabled is None:
+            thinking_enabled = False
+
+        if thinking_enabled:
+            eb.pop("reasoning_split", None)
+        else:
+            eb["reasoning_split"] = True
+
+        return eb or None
+
     def __init__(
         self,
         provider_repository: LLMProviderRepository,
@@ -338,11 +460,12 @@ class LLMRuntimeService:
 
     # ============== 统一构建接口 ==============
 
-    def build_runnable_for_callsite(self, callsite_key: str):
+    def build_runnable_for_callsite(self, callsite_key: str, *, force_streaming: bool | None = None):
         """构建指定调用点的 runnable。
 
         Args:
             callsite_key: 调用点 key（建议 module:action）
+            force_streaming: 当 callsite 为 chat 模型时，强制开启/关闭 token 流式（不修改数据库配置）。
 
         Returns:
             LangChain Runnable 对象
@@ -354,7 +477,7 @@ class LLMRuntimeService:
         if model_kind == self.MODEL_KIND_CHAT:
             scope = callsite.prompt_scope or callsite.key
             prompt = self._get_active_prompt(scope)
-            llm = self._build_chat_model(provider, callsite_config)
+            llm = self._build_chat_model(provider, callsite_config, force_streaming=force_streaming)
             prompt_template = self._build_prompt(prompt)
             return prompt_template | llm | StrOutputParser()
 
@@ -459,6 +582,8 @@ class LLMRuntimeService:
         self,
         provider: LLMProvider,
         callsite_config: dict | None = None,
+        *,
+        force_streaming: bool | None = None,
     ) -> ChatProtocol:
         """构建对话模型。"""
         provider_config = self._parse_json(provider.config_json)
@@ -481,8 +606,16 @@ class LLMRuntimeService:
         streaming = config.pop("stream", None)
         if streaming is None:
             streaming = config.pop("streaming", None)
+        # 运行期强制开关（仅影响本次构建，不回写 DB）
+        if force_streaming is not None:
+            streaming = bool(force_streaming)
         model_override = config.pop("model", None)
         ollama_model = config.pop("ollama_model", None)  # 仅对 provider_type=ollama 生效
+        # 中台“思考模式”开关（当前仅对 MiniMax-M2.1 生效）
+        thinking_enabled = self._parse_bool_maybe(config.pop("thinking_enabled", None))
+        if thinking_enabled is None:
+            # 兼容未来可能的命名：thinking_mode=on/off
+            thinking_enabled = self._parse_bool_maybe(config.pop("thinking_mode", None))
 
         if config:
             model_kwargs = {**(model_kwargs or {}), **config}
@@ -490,6 +623,12 @@ class LLMRuntimeService:
         if provider.provider_type == "openai_compatible":
             api_key = self._resolve_api_key(provider)
             model_name = model_override or default_model_name
+            extra_body = self._apply_thinking_mode_for_openai_compatible(
+                provider=provider,
+                model_name=model_name,
+                extra_body=extra_body,
+                thinking_enabled=thinking_enabled,
+            )
             params: dict[str, Any] = {
                 "model": model_name,
                 "api_key": api_key,
@@ -613,7 +752,7 @@ class LLMRuntimeService:
             if use_remote and not host:
                 host = provider.base_url
             use_fp16 = config.pop("use_fp16", True)
-            device = config.pop("device", "cpu")
+            device = self._normalize_device(config.pop("device", "cpu"))
             # embedding_dimension 用于元数据记录，不影响模型加载
             embedding_dimension = config.pop("embedding_dimension", None)
 
@@ -722,7 +861,7 @@ class LLMRuntimeService:
 
             # 本地模式：直接加载 reranker 模型
             use_fp16 = config.pop("use_fp16", True)
-            device = config.pop("device", "cpu")
+            device = self._normalize_device(config.pop("device", "cpu"))
             trust_remote_code = config.pop("trust_remote_code", True)
             batch_size = config.pop("batch_size", 64)
             return FlagEmbeddingLocalReranker(

@@ -1,21 +1,12 @@
-"""API 路由集合。"""
+"""API routes package.
 
-from src.interfaces.api.routes.health import router as health_router
-from src.interfaces.api.routes.intermediates import router as intermediates_router
-from src.interfaces.api.routes.jobs import router as jobs_router
-from src.interfaces.api.routes.llm import router as llm_router
-from src.interfaces.api.routes.prompts import router as prompts_router
-from src.interfaces.api.routes.sources import router as sources_router
-from src.interfaces.api.routes.targets import router as targets_router
-from src.interfaces.api.routes.templates import router as templates_router
+重要：本模块必须**无副作用**（不要在 import 时自动导入各路由）。
 
-__all__ = [
-    "health_router",
-    "intermediates_router",
-    "jobs_router",
-    "llm_router",
-    "prompts_router",
-    "sources_router",
-    "targets_router",
-    "templates_router",
-]
+原因：
+- 部分路由（如文件上传）依赖可选运行时依赖（python-multipart）。
+- KB 独立部署模式（LUMO_API_MODE=kb_admin/kb_query）不应因无关路由导入而失败。
+
+路由挂载请在 `src/interfaces/api/app.py` 中显式导入与 include。
+"""
+
+__all__: list[str] = []

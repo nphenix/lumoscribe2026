@@ -92,7 +92,7 @@ def get_intermediate(
         raise HTTPException(status_code=404, detail="中间态产物不存在")
 
     # 解析元数据
-    metadata = service._parse_metadata(artifact.metadata)
+    metadata = service._parse_metadata(artifact.extra_metadata)
 
     return IntermediateArtifactResponse(
         id=artifact.id,
