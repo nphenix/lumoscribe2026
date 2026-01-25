@@ -52,7 +52,7 @@ class CleaningOptions(BaseModel):
 class CleanedDocumentArtifact(BaseModel):
     """清洗后的文档产物。"""
 
-    source_file_id: int = Field(..., description="源文件 ID")
+    source_file_id: str = Field(..., description="源文件 ID")
     original_text: str = Field(..., description="原始文本")
     cleaned_text: str = Field(..., description="清洗后文本")
     cleaning_stats: CleaningStats = Field(..., description="清洗统计信息")
@@ -74,7 +74,7 @@ class ChartData(BaseModel):
 class ChartJSONArtifact(BaseModel):
     """图表 JSON 产物。"""
 
-    source_file_id: int = Field(..., description="源文件 ID")
+    source_file_id: str = Field(..., description="源文件 ID")
     charts: list[ChartData] = Field(..., description="图表列表")
     output_path: str = Field(..., description="输出文件路径")
     created_at: datetime = Field(default_factory=datetime.now, description="创建时间")

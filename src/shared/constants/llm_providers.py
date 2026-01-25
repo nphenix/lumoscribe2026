@@ -34,7 +34,7 @@ PROVIDER_TYPE_CONFIG_KEYS = {
         {"key": "rerank_top_k", "display": "RERANK_TOP_K"},
         # 远程模式（可选，默认不使用）
         {"key": "remote", "display": "FLAGEMBEDDING_REMOTE"},
-        {"key": "host", "display": "FLAGEMBEDDING_HOST"},
+        {"key": "host", "display": "FLAGEMBEDDING_HOST (默认 http://localhost:7904)"},
     ],
 }
 

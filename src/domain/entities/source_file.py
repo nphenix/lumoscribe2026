@@ -20,6 +20,10 @@ class SourceFileStatus(str, PyEnum):
 
     ACTIVE = "active"
     ARCHIVED = "archived"
+    MINERU_PROCESSING = "mineru_processing"
+    MINERU_COMPLETED = "mineru_completed"
+    CLEANING_PROCESSING = "cleaning_processing"
+    CLEANING_COMPLETED = "cleaning_completed"
 
 
 class SourceFile(Base):

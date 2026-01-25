@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
+import zipfile
+import io
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +90,9 @@ class MinerUClient:
         try:
             from src.shared.config import get_settings
             from src.shared.db import make_engine, make_session_factory
+            from src.application.repositories.llm_call_site_repository import (
+                LLMCallSiteRepository,
+            )
             from src.application.repositories.llm_provider_repository import (
                 LLMProviderRepository,
             )
@@ -96,18 +101,30 @@ class MinerUClient:
             engine = make_engine(settings.sqlite_path)
             session_factory = make_session_factory(engine)
             with session_factory() as session:
-                repo = LLMProviderRepository(session)
-                provider = repo.get_by_key("mineru")
+                # 1. 先通过 callsite 查找绑定的 Provider
+                callsite_repo = LLMCallSiteRepository(session)
+                callsite = callsite_repo.get_by_key("mineru:parse_document")
+                
+                provider = None
+                if callsite and callsite.provider_id:
+                    # 如果 callsite 绑定了 provider，直接使用绑定的
+                    provider_repo = LLMProviderRepository(session)
+                    provider = provider_repo.get_by_id(callsite.provider_id)
+                
+                # 2. 如果 callsite 未绑定或未找到，回退到按 key="mineru" 查找（兼容旧逻辑）
+                if provider is None:
+                    provider_repo = LLMProviderRepository(session)
+                    provider = provider_repo.get_by_key("mineru")
 
                 if provider is None:
-                    raise ValueError("mineru provider not found in database")
+                    raise ValueError("mineru provider not found (checked callsite 'mineru:parse_document' and provider key 'mineru')")
 
                 if not provider.enabled:
-                    raise ValueError("mineru provider is not enabled")
+                    raise ValueError(f"provider {provider.name} is not enabled")
 
                 # 从数据库加载配置
                 if not provider.base_url:
-                    raise ValueError("mineru base_url not configured in database")
+                    raise ValueError(f"base_url not configured for provider {provider.name}")
 
                 config_dict = {"base_url": provider.base_url}
 
@@ -715,6 +732,34 @@ class MinerUClient:
                 code="network_error",
             ) from e
 
+    async def download_file(self, url: str) -> bytes:
+        """下载文件。
+
+        Args:
+            url: 下载链接
+
+        Returns:
+            文件内容
+        """
+        client = await self._get_client()
+        try:
+            response = await client.get(url, timeout=httpx.Timeout(self.config.upload_timeout))
+            response.raise_for_status()
+            return response.content
+        except httpx.HTTPStatusError as e:
+            code, status_code = StatusCodeMapper.get_error(e.response.status_code)
+            raise MinerUClientError(
+                message=f"下载文件失败: {e.response.text}",
+                status_code=status_code,
+                code=code,
+            ) from e
+        except httpx.RequestError as e:
+            raise MinerUClientError(
+                message=f"网络错误: {repr(e)}",
+                status_code=503,
+                code="network_error",
+            ) from e
+
     async def wait_for_completion(
         self,
         batch_id: str,
@@ -919,6 +964,31 @@ class MinerUIngestionService:
                 task_info = await self.client.wait_for_completion(batch_id)
 
                 if task_info.status == MinerUTaskStatus.COMPLETED:
+                    # 下载并解压结果
+                    download_url = task_info.result.get("download_url")
+                    if download_url:
+                        try:
+                            zip_content = await self.client.download_file(download_url)
+                            with zipfile.ZipFile(io.BytesIO(zip_content)) as zf:
+                                zf.extractall(output_dir)
+                            log.info(
+                                "mineru.ingest.extracted",
+                                extra=log_extra(
+                                    source_file_id=source_file_id,
+                                    output_dir=str(output_dir),
+                                ),
+                            )
+                        except Exception as e:
+                            log.error(
+                                "mineru.ingest.download_failed",
+                                extra=log_extra(
+                                    source_file_id=source_file_id,
+                                    error=str(e),
+                                ),
+                            )
+                            # 即使下载失败，也记录元数据，但标记为部分成功或记录错误
+                            # 这里选择继续，但在 result_data 中可能需要体现
+
                     result_data = {
                         "batch_id": batch_id,
                         "source_file_id": source_file_id,
@@ -998,7 +1068,7 @@ class MinerUIngestionService:
 
         async def process_with_semaphore(
             file_path: Path | str,
-            source_file_id: int,
+            source_file_id: str | int,
         ) -> MinerUIngestResult:
             async with semaphore:
                 return await self.ingest_document(

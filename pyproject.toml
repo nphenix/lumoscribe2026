@@ -19,6 +19,9 @@ dependencies = [
     "langchain>=1.0.0",
     "langchain-openai>=0.1.0",
     "langchain-ollama",
+    # Markdown 解析（GFM 表格保护）
+    "markdown-it-py>=3.0.0",
+    "mdit-py-plugins>=0.4.0",
     # RAG 依赖
     "llama-index>=0.14.6",
     "llama-index-readers-file>=0.2.0",
@@ -40,8 +43,8 @@ dependencies = [
 
 [tool.uv]
 index = [
-    # 1. 默认源：清华镜像 (default = true)
-    { name = "pypi", url = "https://pypi.tuna.tsinghua.edu.cn/simple", default = true },
+    # 1. 默认源：官方 PyPI (default = true)
+    { name = "pypi", url = "https://pypi.org/simple", default = true },
     # 2. 专用源：Windows PyTorch CUDA 13.0
     { name = "pytorch-cu130", url = "https://download.pytorch.org/whl/cu130", explicit = true },
 ]

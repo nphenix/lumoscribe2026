@@ -26,7 +26,8 @@ def configure_logging(level: str = "INFO") -> None:
 
     handler = logging.StreamHandler()
     formatter = JsonFormatter(
-        "%(asctime)s %(levelname)s %(name)s %(message)s %(request_id)s"
+        "%(asctime)s %(levelname)s %(name)s %(message)s %(request_id)s",
+        json_ensure_ascii=False,
     )
     handler.setFormatter(formatter)
     handler.addFilter(RequestIdFilter())

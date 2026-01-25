@@ -12,6 +12,7 @@ import base64
 import json
 import mimetypes
 import os
+import shutil
 import re
 from pathlib import Path
 from typing import Any
@@ -91,6 +92,22 @@ class DocumentCleaningService:
     # Markdown 图片链接（用于结构保护）
     # 例：![](images/xxx.jpg) 或 ![alt](images/xxx.jpg)
     MD_IMAGE_TOKEN_RE = re.compile(r"!\[[^\]]*]\([^)]+\)")
+    MD_IMAGE_TOKEN_EXTRACT_RE = re.compile(r"!\[([^\]]*)]\(([^)]+)\)")
+    MD_TABLE_HTML_RE = re.compile(r"<table[\s\S]*?</table>", re.IGNORECASE)
+    MD_TABLE_BLOCK_RE = re.compile(
+        r"(?:^\s*\|.+\|\s*\n\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\s*\|?\s*(?:\n\s*\|.*\|\s*)+)",
+        re.MULTILINE,
+    )
+    MD_TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\s*\|?\s*$")
+    QR_CONTEXT_PATTERNS = [
+        r"二维码",
+        r"扫码",
+        r"扫一扫",
+        r"公众号",
+        r"微信",
+        r"qr\\s*code",
+        r"qrcode",
+    ]
 
     def __init__(
         self,
@@ -105,8 +122,9 @@ class DocumentCleaningService:
     async def clean_document(
         self,
         text: str,
-        source_file_id: int,
+        source_file_id: str,
         options: CleaningOptions | None = None,
+        mineru_output_dir: Path | None = None,
     ) -> CleaningResult:
         """清洗文档，返回清洗后的内容和元数据。
 
@@ -114,6 +132,7 @@ class DocumentCleaningService:
             text: 原始文本
             source_file_id: 源文件 ID
             options: 清洗选项
+            mineru_output_dir: MinerU 输出目录（用于复制图片）
 
         Returns:
             清洗结果
@@ -127,7 +146,7 @@ class DocumentCleaningService:
             rule_stats = self._calculate_stats(text, rule_cleaned)
 
             # 第二层：LLM 智能清洗
-            llm_cleaned = await self.llm_clean(rule_cleaned, options)
+            llm_cleaned = await self.llm_clean(rule_cleaned, options, original_text=text)
             final_stats = self._calculate_stats(rule_cleaned, llm_cleaned)
             final_stats = self._merge_stats(rule_stats, final_stats)
 
@@ -147,12 +166,23 @@ class DocumentCleaningService:
             )
 
             # 写入文件
-            self._write_artifact_file(output_path, artifact)
+            self._write_artifact_file(output_path, artifact, mineru_output_dir)
 
             logger.info(
                 f"文档清洗完成 source_file_id={source_file_id}, "
                 f"移除字符数={final_stats.removed_chars}"
             )
+            try:
+                logger.info(
+                    "doc_cleaning_final",
+                    extra={
+                        "source_file_id": source_file_id,
+                        "output_path": output_path,
+                        "removed_chars": final_stats.removed_chars,
+                    },
+                )
+            except Exception:
+                pass
 
             return CleaningResult(
                 success=True,
@@ -173,8 +203,9 @@ class DocumentCleaningService:
     async def clean_document_stream(
         self,
         text: str,
-        source_file_id: int,
+        source_file_id: str,
         options: CleaningOptions | None = None,
+        mineru_output_dir: Path | None = None,
         *,
         include_final_result: bool = True,
     ) -> AsyncIterator[dict[str, Any]]:
@@ -197,7 +228,7 @@ class DocumentCleaningService:
         # 第二层：LLM 清洗（流式输出）
         yield {"type": "stage", "stage": "llm_clean_start"}
         llm_cleaned: str | None = None
-        async for evt in self.llm_clean_stream(rule_cleaned, options):
+        async for evt in self.llm_clean_stream(rule_cleaned, options, original_text=text):
             if evt.get("type") == "delta":
                 yield evt
             elif evt.get("type") == "final":
@@ -224,9 +255,21 @@ class DocumentCleaningService:
             cleaning_stats=final_stats,
             output_path=output_path,
         )
-        self._write_artifact_file(output_path, artifact)
+        self._write_artifact_file(output_path, artifact, mineru_output_dir)
 
         yield {"type": "stage", "stage": "llm_clean_done"}
+
+        try:
+            logger.info(
+                "doc_cleaning_final",
+                extra={
+                    "source_file_id": source_file_id,
+                    "output_path": output_path,
+                    "removed_chars": final_stats.removed_chars,
+                },
+            )
+        except Exception:
+            pass
 
         if include_final_result:
             yield {
@@ -248,6 +291,81 @@ class DocumentCleaningService:
             规则过滤后的文本
         """
         result = text
+
+        def _extract_table_spans(src: str) -> list[tuple[int, int]]:
+            spans: list[tuple[int, int]] = []
+            try:
+                from markdown_it import MarkdownIt
+                md = MarkdownIt("gfm-like")
+                tokens = md.parse(src)
+                lines = src.splitlines(True)
+                starts: list[int] = []
+                pos = 0
+                for ln in lines:
+                    starts.append(pos)
+                    pos += len(ln)
+                open_stack: list[tuple[int, int]] = []
+                for tk in tokens:
+                    if tk.type == "table_open" and tk.map:
+                        open_stack.append((tk.map[0], tk.map[1]))
+                    elif tk.type == "table_close" and open_stack:
+                        lb, le = open_stack.pop(0)
+                        s = starts[lb] if lb < len(starts) else 0
+                        e = (starts[le - 1] + len(lines[le - 1])) if (le - 1) < len(lines) else len(src)
+                        spans.append((s, e))
+            except Exception:
+                pass
+            for m in self.MD_TABLE_HTML_RE.finditer(src):
+                spans.append((m.start(), m.end()))
+            # 轻量级 Markdown 管道表回退识别
+            lines = src.splitlines(True)
+            starts: list[int] = []
+            pos = 0
+            for ln in lines:
+                starts.append(pos)
+                pos += len(ln)
+            i = 0
+            while i + 1 < len(lines):
+                header = lines[i]
+                sep = lines[i + 1]
+                if ("|" in header) and self.MD_TABLE_SEP_RE.fullmatch(sep.strip()):
+                    j = i + 2
+                    while j < len(lines):
+                        if not lines[j].strip():
+                            break
+                        if "|" not in lines[j]:
+                            break
+                        j += 1
+                    s = starts[i]
+                    e = starts[j - 1] + len(lines[j - 1])
+                    spans.append((s, e))
+                    i = j
+                    continue
+                i += 1
+            spans.sort(key=lambda x: (x[0], x[1]))
+            merged: list[tuple[int, int]] = []
+            for s, e in spans:
+                if not merged or s >= merged[-1][1]:
+                    merged.append((s, e))
+                else:
+                    ls, le = merged[-1]
+                    if e > le:
+                        merged[-1] = (ls, e)
+            return merged
+
+        table_spans = _extract_table_spans(result)
+        placeholders: list[tuple[str, str]] = []
+        if table_spans:
+            buf = []
+            last = 0
+            for idx, (s, e) in enumerate(table_spans):
+                ph = f"\u0000TABLE_BLOCK_{idx}\u0000"
+                buf.append(result[last:s])
+                buf.append(ph)
+                placeholders.append((ph, result[s:e]))
+                last = e
+            buf.append(result[last:])
+            result = "".join(buf)
 
         # 移除广告
         if options.remove_ads:
@@ -282,10 +400,20 @@ class DocumentCleaningService:
         if options.remove_duplicates:
             result = self._remove_duplicates(result)
 
+        if placeholders:
+            for ph, original_block in placeholders:
+                # 使用原始表格文本替换占位符，确保结构不被破坏
+                result = result.replace(ph, original_block)
+
         return result.strip()
 
     async def llm_clean(
-        self, text: str, options: CleaningOptions, *, strict: bool = False
+        self,
+        text: str,
+        options: CleaningOptions,
+        *,
+        strict: bool = False,
+        original_text: str | None = None,
     ) -> str:
         """LLM 智能清洗。
 
@@ -298,27 +426,48 @@ class DocumentCleaningService:
         Returns:
             LLM 清洗后的文本
         """
-        segments = self._split_markdown_by_image_tokens(text)
+        segments = self._split_markdown_by_special_tokens(text, original_text=original_text)
+        max_len = 8192
 
         # 如果存在图片链接：LLM 只处理文本段，图片段原样拼回（避免被误删）
         if len(segments) > 1:
             out: list[str] = []
             for seg_type, seg_text in segments:
-                if seg_type == "image":
+                if seg_type in {"image", "table", "chart"}:
                     out.append(seg_text)
+                elif seg_type == "qr_image":
+                    continue
                 else:
-                    out.append(
-                        await self._llm_clean_text_segment(
-                            seg_text, options, strict=strict
+                    if len(seg_text) <= max_len:
+                        out.append(
+                            await self._llm_clean_text_segment(
+                                seg_text, options, strict=strict
+                            )
                         )
-                    )
+                    else:
+                        for sub in self._split_text_by_length(seg_text, max_len):
+                            out.append(
+                                await self._llm_clean_text_segment(
+                                    sub, options, strict=strict
+                                )
+                            )
             return "".join(out).strip()
 
         # 无图片链接：单段清洗
-        return (await self._llm_clean_text_segment(text, options, strict=strict)).strip()
+        if len(text) <= max_len:
+            return (await self._llm_clean_text_segment(text, options, strict=strict)).strip()
+        out2: list[str] = []
+        for sub in self._split_text_by_length(text, max_len):
+            out2.append(await self._llm_clean_text_segment(sub, options, strict=strict))
+        return "".join(out2).strip()
 
     async def llm_clean_stream(
-        self, text: str, options: CleaningOptions, *, strict: bool = False
+        self,
+        text: str,
+        options: CleaningOptions,
+        *,
+        strict: bool = False,
+        original_text: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """仅 LLM 层的流式清洗（不含规则过滤）。
 
@@ -328,56 +477,216 @@ class DocumentCleaningService:
         - {"type": "error", "error": "..."}: 发生错误（strict=False 时会降级输出原文）
         """
         yield {"type": "stage", "stage": "segment_split"}
-        segments = self._split_markdown_by_image_tokens(text)
+        segments = self._split_markdown_by_special_tokens(text, original_text=original_text)
         yield {
             "type": "stage",
             "stage": "segment_stream_start",
             "segments": len(segments),
         }
 
-        final_parts: list[str] = []
+        max_len = 8192
+        concurrency_limit = 1
+        final_parts: list[str] = [""] * len(segments)
 
-        for seg_type, seg_text in segments:
-            if seg_type == "image":
-                # 图片 token 必须原样透传（结构保护）
+        queue: asyncio.Queue = asyncio.Queue()
+        semaphore = asyncio.Semaphore(concurrency_limit)
+
+        async def process_segment(idx: int, seg_type: str, seg_text: str) -> None:
+            if seg_type in {"image", "table", "chart"}:
                 if seg_text:
-                    yield {"type": "delta", "text": seg_text}
-                final_parts.append(seg_text)
-                continue
+                    await queue.put({"type": "delta", "text": seg_text})
+                final_parts[idx] = seg_text
+                await queue.put({"type": "progress", "segment_index": idx, "status": "done"})
+                return
+            if seg_type == "qr_image":
+                final_parts[idx] = ""
+                await queue.put({"type": "progress", "segment_index": idx, "status": "done"})
+                return
 
-            seg_final: str | None = None
-            async for evt in self._llm_clean_text_segment_stream(
-                seg_text, options, strict=strict
-            ):
-                if evt.get("type") == "segment_final":
-                    seg_final = str(evt.get("text") or "")
-                    continue
+            def _subs_for(text_in: str) -> list[str]:
+                if len(text_in) <= max_len:
+                    return [text_in]
+                return self._split_text_by_length(text_in, max_len)
+
+            combined: list[str] = []
+            for sub in _subs_for(seg_text):
+                async for evt in self._llm_clean_text_segment_stream(sub, options, strict=strict):
+                    if evt.get("type") == "segment_final":
+                        combined.append(str(evt.get("text") or ""))
+                        continue
+                    await queue.put(evt)
+            final_parts[idx] = "".join(combined).strip()
+            await queue.put({"type": "progress", "segment_index": idx, "status": "done"})
+
+        async def run_with_semaphore(coro):
+            async with semaphore:
+                await coro
+
+        tasks = [
+            asyncio.create_task(run_with_semaphore(process_segment(i, t, s)))
+            for i, (t, s) in enumerate(segments)
+        ]
+
+        done_count = 0
+        while done_count < len(segments):
+            evt = await queue.get()
+            if isinstance(evt, dict) and evt.get("type") == "progress":
+                done_count += 1
+            else:
                 yield evt
-            final_parts.append(seg_final if seg_final is not None else "")
+        # 排空队列中可能遗留的事件
+        while not queue.empty():
+            evt = await queue.get()
+            if isinstance(evt, dict) and evt.get("type") == "progress":
+                continue
+            yield evt
+        await asyncio.gather(*tasks)
 
         final_text = "".join(final_parts).strip()
         yield {"type": "stage", "stage": "segment_stream_done"}
         yield {"type": "final", "cleaned_text": final_text}
 
-    def _split_markdown_by_image_tokens(self, text: str) -> list[tuple[str, str]]:
-        """按 Markdown 图片 token 将文本分段。
-
-        Returns:
-            list of (type, content), where type in {"text", "image"}
-        """
+    def _split_markdown_by_special_tokens(self, text: str, *, original_text: str | None = None) -> list[tuple[str, str]]:
         if not text:
             return [("text", "")]
-
+        spans: list[tuple[int, int, str]] = []
+        # 优先尝试 AST 解析（如安装了 markdown-it-py）
+        try:
+            from markdown_it import MarkdownIt
+            md = MarkdownIt("gfm-like")
+            tokens = md.parse(text)
+            lines = text.splitlines(True)
+            starts: list[int] = []
+            pos = 0
+            for ln in lines:
+                starts.append(pos)
+                pos += len(ln)
+            open_stack: list[tuple[int, int]] = []
+            for tk in tokens:
+                if tk.type == "table_open" and tk.map:
+                    open_stack.append((tk.map[0], tk.map[1]))
+                elif tk.type == "table_close" and open_stack:
+                    lb, le = open_stack.pop(0)
+                    s = starts[lb] if lb < len(starts) else 0
+                    e = (starts[le - 1] + len(lines[le - 1])) if (le - 1) < len(lines) else len(text)
+                    spans.append((s, e, "table"))
+                elif tk.type in {"fence", "code_block"} and tk.map:
+                    info = getattr(tk, "info", "") or ""
+                    lang = str(info).strip().lower()
+                    if lang in {
+                        "mermaid",
+                        "vega",
+                        "vegalite",
+                        "graphviz",
+                        "dot",
+                        "plantuml",
+                        "echarts",
+                        "chart",
+                        "sequence-diagram",
+                    }:
+                        lb, le = tk.map
+                        s = starts[lb] if lb < len(starts) else 0
+                        e = (starts[le - 1] + len(lines[le - 1])) if (le - 1) < len(lines) else len(text)
+                        spans.append((s, e, "chart"))
+        except Exception:
+            pass
+        for m in self.MD_TABLE_HTML_RE.finditer(text):
+            spans.append((m.start(), m.end(), "table"))
+        for m in self.MD_TABLE_BLOCK_RE.finditer(text):
+            spans.append((m.start(), m.end(), "table"))
+        lines = text.splitlines(True)
+        starts: list[int] = []
+        pos = 0
+        for ln in lines:
+            starts.append(pos)
+            pos += len(ln)
+        i = 0
+        while i + 1 < len(lines):
+            header = lines[i]
+            sep = lines[i + 1]
+            if ("|" in header) and self.MD_TABLE_SEP_RE.fullmatch(sep.strip()):
+                j = i + 2
+                while j < len(lines):
+                    if not lines[j].strip():
+                        break
+                    if "|" not in lines[j]:
+                        break
+                    j += 1
+                s = starts[i]
+                e = starts[j - 1] + len(lines[j - 1])
+                spans.append((s, e, "table"))
+                i = j
+                continue
+            i += 1
+        spans.sort(key=lambda x: (x[0], x[1]))
+        merged: list[tuple[int, int, str]] = []
+        for s, e, t in spans:
+            if not merged or s >= merged[-1][1]:
+                merged.append((s, e, t))
+            else:
+                ls, le, lt = merged[-1]
+                if e > le:
+                    merged[-1] = (ls, e, lt)
+        for m in self.MD_IMAGE_TOKEN_RE.finditer(text):
+            ms, me = m.start(), m.end()
+            inside = False
+            for ts, te, _ in merged:
+                if ms >= ts and me <= te:
+                    inside = True
+                    break
+            if not inside:
+                token = text[ms:me]
+                seg_type = "image"
+                em = self.MD_IMAGE_TOKEN_EXTRACT_RE.match(token)
+                alt = em.group(1) if em else ""
+                link = em.group(2) if em else ""
+                ctx_left = text[max(0, ms - 200) : ms]
+                ctx_right = text[me : min(len(text), me + 200)]
+                if original_text:
+                    idx = original_text.find(token)
+                    if idx != -1:
+                        ctx_left = original_text[max(0, idx - 200) : idx]
+                        ctx_right = original_text[idx + len(token) : min(len(original_text), idx + len(token) + 200)]
+                def _has_qr_ctx(s: str) -> bool:
+                    for p in self.QR_CONTEXT_PATTERNS:
+                        if re.search(p, s, flags=re.IGNORECASE):
+                            return True
+                    return False
+                fname = Path(link).name.lower() if link else ""
+                if _has_qr_ctx(alt) or _has_qr_ctx(ctx_left) or _has_qr_ctx(ctx_right) or ("qr" in fname or "qrcode" in fname):
+                    seg_type = "qr_image"
+                merged.append((ms, me, seg_type))
+        merged.sort(key=lambda x: (x[0], x[1]))
         parts: list[tuple[str, str]] = []
         pos = 0
-        for m in self.MD_IMAGE_TOKEN_RE.finditer(text):
-            if m.start() > pos:
-                parts.append(("text", text[pos : m.start()]))
-            parts.append(("image", m.group(0)))
-            pos = m.end()
+        for s, e, t in merged:
+            if s > pos:
+                parts.append(("text", text[pos:s]))
+            parts.append((t, text[s:e]))
+            pos = e
         if pos < len(text):
             parts.append(("text", text[pos:]))
         return parts if parts else [("text", text)]
+
+    def _split_text_by_length(self, text: str, max_chars: int) -> list[str]:
+        parts: list[str] = []
+        buf: list[str] = []
+        length = 0
+        tokens = re.split(r"(\n{2,}|[。！？!?；;]+)", text)
+        for tok in tokens:
+            if not tok:
+                continue
+            if length + len(tok) > max_chars:
+                if buf:
+                    parts.append("".join(buf))
+                buf = [tok]
+                length = len(tok)
+            else:
+                buf.append(tok)
+                length += len(tok)
+        if buf:
+            parts.append("".join(buf))
+        return parts
 
     async def _llm_clean_text_segment(
         self, text: str, options: CleaningOptions, *, strict: bool
@@ -385,6 +694,12 @@ class DocumentCleaningService:
         """清洗单个文本段（该段不包含 Markdown 图片链接 token）。"""
         if not text.strip():
             return text
+
+        # 尝试从上下文中获取 source_file_id (通过检查调用栈或简单地依赖外部传入)
+        # 由于当前架构限制，暂时只记录文本摘要
+        # 优化日志可读性：移除换行转义，避免 json logger 再次转义导致无法阅读
+        text_preview = text[:80].replace("\n", " ").strip()
+        logger.info(f"开始清洗文本段（长度：{len(text)}，预览：{text_preview}…）")
 
         # 保留段落边界：把首尾空白摘出来，避免 LLM strip 破坏拼接
         prefix_match = re.match(r"^\s*", text)
@@ -407,9 +722,17 @@ class DocumentCleaningService:
 
             # 使用流式传输聚合结果（内部聚合），确保对外 clean_document() 语义稳定
             cleaned_chunks: list[str] = []
+            chunk_count = 0
             async for chunk in chain.astream({"input": prompt_text}):
                 if chunk:
-                    cleaned_chunks.append(str(chunk))
+                    chunk_str = str(chunk)
+                    cleaned_chunks.append(chunk_str)
+                    chunk_count += 1
+                    # 每收到 10 个 chunk 打印一次日志，避免刷屏
+                    if chunk_count % 10 == 0:
+                        logger.info(f"清洗进度：已接收 {chunk_count} 个片段")
+            
+            logger.info(f"文本段清洗完成（片段数：{chunk_count}）")
             cleaned = "".join(cleaned_chunks)
 
             cleaned_text = cleaned.strip()
@@ -418,20 +741,13 @@ class DocumentCleaningService:
         except Exception as e:
             if strict:
                 raise
-            logger.warning(f"LLM 清洗失败，返回原文本段: {e}")
+            logger.warning(f"文本段清洗失败，已降级为原文（错误：{e}）")
             return text
 
     def _bind_llm_for_streaming(self, llm: Any) -> Any:
-        """尽可能为底层 LLM 启用流式输出（LangChain 推荐：stream/astream + streaming=True）。"""
-        try:
-            # OpenAI Compatible: ChatOpenAI 需要 streaming=True 才会真正 token streaming
-            if hasattr(llm, "streaming"):
-                return llm.bind(streaming=True)
-            # Ollama: 默认支持 streaming；若用户配置了 disable_streaming，则显式关闭
-            if hasattr(llm, "disable_streaming"):
-                return llm.bind(disable_streaming=False)
-        except Exception:
-            return llm
+        """尽可能为底层 LLM 启用流式输出。"""
+        # 移除所有自动 bind 操作，避免向底层客户端传递不支持的参数（如 disable_streaming 传给 OpenAI）
+        # LangChain 的 .astream() 方法会自动处理大部分流式需求
         return llm
 
     async def _llm_clean_text_segment_stream(
@@ -481,7 +797,7 @@ class DocumentCleaningService:
         except Exception as e:
             if strict:
                 raise
-            logger.warning(f"LLM 流式清洗失败，降级输出原文本段: {e}")
+            logger.warning(f"流式清洗失败，已降级输出原文本段（错误：{e}）")
             yield {"type": "error", "error": str(e)}
             yield {"type": "delta", "text": text}
             yield {"type": "segment_final", "text": text}
@@ -588,7 +904,7 @@ class DocumentCleaningService:
 
     def _save_artifact(
         self,
-        source_file_id: int,
+        source_file_id: str,
         stats: CleaningStats,
     ) -> str:
         """保存中间产物到数据库。
@@ -602,6 +918,9 @@ class DocumentCleaningService:
 
         batch_id = datetime.now().strftime("%Y%m%d")
         artifact_id = str(uuid.uuid4())
+        # T097 要求使用 data/intermediates/{id}/cleaned_doc/ 目录
+        # 这里存储路径是相对路径，相对于 DATA_ROOT (f:\lumoscribe2026\data)
+        # 所以是 intermediates/{source_file_id}/cleaned_doc/{artifact_id}.json
         relative_path = f"intermediates/{source_file_id}/cleaned_doc/{artifact_id}.json"
 
         artifact = IntermediateArtifact(
@@ -624,15 +943,160 @@ class DocumentCleaningService:
 
         return relative_path
 
+    def _filter_json_content(
+        self,
+        json_content: list[dict[str, Any]],
+        cleaned_text: str,
+        options: CleaningOptions,
+    ) -> list[dict[str, Any]]:
+        """过滤 JSON 内容。
+        
+        1. 过滤未在 cleaned_text 中引用的图片
+        2. 过滤符合规则的噪声文本
+        """
+        filtered = []
+        
+        # 提取 cleaned_text 中的所有图片链接
+        used_images = set()
+        for m in self.MD_IMAGE_TOKEN_RE.finditer(cleaned_text):
+            # 提取路径: ![](images/xxx.jpg) -> images/xxx.jpg
+            # 简单提取括号内的内容
+            link = m.group(0).split("(", 1)[1].rstrip(")")
+            used_images.add(Path(link).name)
+
+        for item in json_content:
+            item_type = item.get("type")
+            
+            # 处理图片/表格/公式 (image, table, formula 等可能包含 img_path)
+            img_path = item.get("img_path")
+            if img_path:
+                img_name = Path(img_path).name
+                # 如果图片未在 cleaned_text 中引用，则移除
+                if img_name not in used_images:
+                    continue
+                caps = item.get("image_caption") or []
+                caps_text = " ".join([str(c) for c in caps])
+                def _has_qr_hint(s: str) -> bool:
+                    for p in self.QR_CONTEXT_PATTERNS:
+                        if re.search(p, s, flags=re.IGNORECASE):
+                            return True
+                    return False
+                if _has_qr_hint(img_name) or _has_qr_hint(caps_text):
+                    continue
+            
+            # 处理文本
+            if item_type == "text":
+                text = item.get("text", "")
+                # 应用规则过滤
+                if self._is_noise(text, options):
+                    continue
+            
+            # 处理已废弃内容 (discarded)
+            if item_type == "discarded":
+                continue
+
+            filtered.append(item)
+            
+        return filtered
+
+    def _is_noise(self, text: str, options: CleaningOptions) -> bool:
+        """判断文本是否为噪声 (基于规则)。"""
+        if not text.strip():
+            return True
+            
+        if options.remove_ads:
+            for pattern in self.AD_PATTERNS:
+                if re.search(pattern, text, flags=re.IGNORECASE):
+                    return True
+                    
+        if options.remove_noise:
+            # 简单判断：如果整段匹配噪声模式
+            for pattern in self.NOISE_PATTERNS:
+                # 这里的模式有些是行级的，有些是段落级的
+                # 简单起见，如果匹配到任何噪声模式，且文本较短，则认为是噪声
+                if re.search(pattern, text, flags=re.MULTILINE):
+                    # 如果包含"第x页"且很短
+                    if len(text) < 20: 
+                        return True
+                    # 如果完全匹配
+                    if re.fullmatch(pattern, text.strip(), flags=re.MULTILINE):
+                        return True
+                        
+            # 头部噪声 (汇报人等)
+            for pattern in self.HEAD_NOISE_PATTERNS:
+                if re.search(pattern, text):
+                    return True
+
+        return False
+
     def _write_artifact_file(
-        self, output_path: str, artifact: CleanedDocumentArtifact
+        self,
+        output_path: str,
+        artifact: CleanedDocumentArtifact,
+        mineru_output_dir: Path | None = None,
     ) -> None:
-        """写入产物文件。"""
+        """写入产物文件。
+        
+        按照 T097 和 T031 要求，必须保留完整的 MinerU 产物结构以便后续处理（如图表提取 T094）。
+        
+        产出文件清单：
+        1. `cleaned.md`: 清洗后的 Markdown 文本（去噪、去广告，保留图片链接）
+        2. `cleaned.json`: 清洗任务元数据（统计信息、原始文本引用等）
+        3. `content_list.json`: (复制) MinerU 原始内容结构列表，用于图表定位
+        4. `layout.json`: (复制) MinerU 布局信息
+        5. `images/`: (复制) 图片文件夹，确保 Markdown 图片链接有效
+        """
         base_path = Path("data") / output_path
-        base_path.parent.mkdir(parents=True, exist_ok=True)
+        output_dir = base_path.parent
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # 1. 写入清洗后的 Markdown (核心产物)
+        # 使用 artifact_id 命名或固定命名，这里保持与 output_path 一致的命名风格
+        md_path = base_path.with_suffix(".md")
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(artifact.cleaned_text)
+
+        # 2. 复制 MinerU 关键结构文件 (content_list 和 layout)
+        if mineru_output_dir:
+            # 复制 images 目录
+            src_images_dir = mineru_output_dir / "images"
+            if src_images_dir.exists() and src_images_dir.is_dir():
+                dst_images_dir = output_dir / "images"
+                if dst_images_dir.exists():
+                    shutil.rmtree(dst_images_dir)
+                shutil.copytree(src_images_dir, dst_images_dir)
+                logger.info(f"已复制图片目录: {src_images_dir} -> {dst_images_dir}")
+
+            # 复制 content_list.json
+            content_list_files = list(mineru_output_dir.glob("*_content_list.json"))
+            if content_list_files:
+                src_content_list = content_list_files[0]
+                dst_content_list = output_dir / "content_list.json"
+                shutil.copy2(src_content_list, dst_content_list)
+                logger.info(f"已复制结构文件: {src_content_list.name} -> content_list.json")
+            
+            # 复制 layout.json
+            layout_files = list(mineru_output_dir.glob("layout.json"))
+            if layout_files:
+                src_layout = layout_files[0]
+                dst_layout = output_dir / "layout.json"
+                shutil.copy2(src_layout, dst_layout)
+                logger.info(f"已复制布局文件: {src_layout.name} -> layout.json")
+
+        # 3. 写入元数据 JSON (CleanedDocumentArtifact)
+        # 包含清洗统计、状态等，并关联上述文件
+        final_json_data = artifact.model_dump(mode="json")
+        
+        # 注入关联文件信息，方便后续步骤查找
+        final_json_data["related_files"] = {
+            "markdown": md_path.name,
+            "content_list": "content_list.json" if mineru_output_dir and list(mineru_output_dir.glob("*_content_list.json")) else None,
+            "layout": "layout.json" if mineru_output_dir and list(mineru_output_dir.glob("layout.json")) else None,
+            "images_dir": "images"
+        }
 
         with open(base_path, "w", encoding="utf-8") as f:
-            f.write(artifact.model_dump_json(indent=2, ensure_ascii=False))
+            json.dump(final_json_data, f, indent=2, ensure_ascii=False)
 
 
 class ChartExtractionService:
@@ -978,6 +1442,7 @@ class ChartExtractionService:
         chart_type: str,
         *,
         strict_json: bool = False,
+        timeout_seconds: int | None = None,
     ) -> ChartData | None:
         """图表转 JSON。
 
@@ -1044,11 +1509,18 @@ class ChartExtractionService:
                 )
 
             try:
-                result = await llm.ainvoke([message])
+                import asyncio as _asyncio
+                result = await _asyncio.wait_for(llm.ainvoke([message]), timeout=float(timeout_seconds or 60))
+            except _asyncio.TimeoutError as exc:
+                raise RuntimeError(
+                    f"多模态 LLM 调用超时: model={type(llm).__name__}, image={chart_image_path}, timeout={timeout_seconds or 60}s"
+                ) from exc
             except Exception as exc:
                 # 严格模式：直接失败并暴露真实原因（例如 provider 不支持图像输入）
+                # 优先使用 str(exc)，如果为空则使用 repr(exc)
+                err_msg = str(exc) or repr(exc)
                 raise RuntimeError(
-                    f"多模态 LLM 调用失败: model={type(llm).__name__}, image={chart_image_path}, error={exc}"
+                    f"多模态 LLM 调用失败: model={type(llm).__name__}, image={chart_image_path}, error={err_msg}"
                 ) from exc
             
             # 解析结果

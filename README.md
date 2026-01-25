@@ -148,7 +148,7 @@ $LUMO_REDIS_URL = "redis://localhost:6379/0"
 **终端 1: 启动 API 服务**
 ```powershell
 python -m src.interfaces.api.main
-# 默认端口: 8000
+# 默认端口: 7901
 ```
 
 **终端 2: 启动 Worker 服务**
@@ -160,22 +160,61 @@ celery -A src.interfaces.worker.celery_app worker --loglevel=info
 ```powershell
 cd src/interfaces/admin-web
 npm run dev
-# 默认地址: http://localhost:3000
+# 访问 http://localhost:7906
 ```
 
 ### 5) 验证安装
 
 完成上述步骤后，执行以下验证：
 
-1. **API**: 访问 `http://localhost:8000/v1/health` 应返回 `{"status":"healthy"}`
-2. **Frontend**: 访问 `http://localhost:3000` 查看管理后台仪表盘
+1. **API**: 访问 `http://localhost:7901/v1/health` 应返回 `{"status":"healthy"}`
+2. **Frontend**: 访问 `http://localhost:7906` 查看管理后台仪表盘
+
+## 端口配置
+
+本项目使用的所有端口配置汇总：
+
+|| 端口 | 服务 | 说明 |
+|------|------|------|
+| **7901** | API 主服务 | 默认服务端口，`LUMO_API_PORT` |
+| **7902** | KB Admin | 知识库建库/管理专用（独立部署） |
+| **7903** | KB Query | 知识库查询专用（独立部署，hybrid + rerank） |
+| **7904** | FlagEmbedding | 向量服务，`LUMO_LLM_FLAGEMBEDDING_HOST` |
+| **7905** | MinerU | PDF OCR 服务，`LUMO_MINERU_API_URL` |
+| **7906** | Next.js 前端 | 前端开发服务器 |
+| **7907** | LLM 测试 Mock | 测试环境 Mock 服务 |
+| **6379** | Redis | 消息队列/缓存（保持不变） |
+| **11434** | Ollama | 本地 LLM 服务（保持不变） |
+
+### 端口使用场景
+
+```powershell
+# 启动 API 主服务（终端 1）
+$env:LUMO_API_PORT = "7901"
+uv run python -m src.interfaces.api.main
+
+# 启动 KB Admin 独立服务（独立终端）
+$env:LUMO_API_MODE = "kb_admin"
+$env:LUMO_API_PORT = "7902"
+uv run python -m src.interfaces.api.main
+
+# 启动 KB Query 独立服务（独立终端）
+$env:LUMO_API_MODE = "kb_query"
+$env:LUMO_API_PORT = "7903"
+uv run python -m src.interfaces.api.main
+
+# 启动前端开发服务器
+cd src/interfaces/admin-web
+npm run dev
+# 访问 http://localhost:7906
+```
 
 ---
 
 ## API 接口
 
 ### 基础信息
-- **Base URL**: `http://localhost:8000/v1`
+- **Base URL**: `http://localhost:7901/v1`
 - **认证**: 暂无需认证（待完善）
 
 ### 核心接口

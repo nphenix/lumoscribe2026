@@ -142,7 +142,7 @@ async def _run() -> int:
             print(f"[T097]  - chars: {len(original)}")
             rule_cleaned = cleaning_service.rule_based_clean(original, options)
             cleaned = await cleaning_service.llm_clean(
-                rule_cleaned, options, strict=True
+                rule_cleaned, options, strict=True, original_text=original
             )
 
             out_md_path.write_text(cleaned, encoding="utf-8")

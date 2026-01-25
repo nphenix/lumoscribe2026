@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="LUMO_", extra="ignore")
 
     api_host: str = "127.0.0.1"
-    api_port: int = 8000
+    api_port: int = 7901
 
     storage_root: Path = Path(".runtime/storage")
     sqlite_path: Path = Path(".runtime/sqlite/lumoscribe.db")
@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     llm_openai_api_key: str = ""
     llm_openai_base_url: str = ""
     llm_ollama_base_url: str = "http://localhost:11434"
-    llm_flagembedding_host: str = "http://localhost:8000"
+    llm_flagembedding_host: str = "http://localhost:7904"
     llm_huggingface_cache: str = "./models/huggingface"
 
     # MinerU 配置（在线服务）

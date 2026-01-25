@@ -52,15 +52,17 @@ class T094PicToJsonPipeline:
         ref_norm = self._normalize_ref_path(ref)
         if not ref_norm:
             return None
+        if "\x00" in ref_norm:
+            return None
         lower = ref_norm.lower()
         if lower.startswith(("http://", "https://", "data:")):
             return None
-        p = Path(ref_norm)
         try:
+            p = Path(ref_norm)
             if p.is_absolute():
                 return p.resolve()
             return (base_dir / p).resolve()
-        except OSError:
+        except (OSError, ValueError):
             return None
 
     def _extract_is_chart_strict(self, json_obj: dict[str, Any], *, image: Path) -> bool:
@@ -403,7 +405,9 @@ class T094PicToJsonPipeline:
         strict: bool = True,
         progress_callback: Any | None = None,
         progress_every: int = 10,
+        timeout_seconds: int = 300,
         resume: bool = False,
+        source_id_filter: str | None = None,
     ) -> dict[str, Any]:
         """执行 T094 批处理。"""
         input_root_p = Path(input_root).resolve()
@@ -425,21 +429,66 @@ class T094PicToJsonPipeline:
                     f"未找到激活提示词: {SCOPE_CHART_EXTRACTION}（请先在 SQLite prompts 中发布激活版本，或运行 scripts/update-chart-extraction-prompt.py）"
                 )
 
-        # 1) 复制（先完整复制再处理）
+        # 默认按 ID 在 pic_to_json 下作为工作目录（有指定 source_id 时生效）
+        if source_id_filter:
+            sid_root = output_root_p / source_id_filter / "pic_to_json"
+            try:
+                sid_root.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
+            workspace_root = sid_root.resolve()
+
+        # 1) 复制
         t0 = time.monotonic()
         should_copy = True
         if resume and output_root_p.exists():
-            should_copy = False
-            if callable(progress_callback):
-                progress_callback(
-                    {
-                        "stage": "copy_start",
-                        "ts": datetime.now().isoformat(),
-                        "input_root": str(input_root_p),
-                        "output_root": str(output_root_p),
-                        "msg": "Resuming mode: skipping copy",
-                    }
-                )
+            if source_id_filter:
+                images_root_pre = (output_root_p / source_id_filter / "pic_to_json" / "images").resolve()
+                has_files = False
+                try:
+                    if images_root_pre.exists() and images_root_pre.is_dir():
+                        for _p in images_root_pre.rglob("*"):
+                            if _p.is_file():
+                                has_files = True
+                                break
+                except Exception:
+                    has_files = False
+                if has_files:
+                    should_copy = False
+                    if callable(progress_callback):
+                        progress_callback(
+                            {
+                                "stage": "copy_start",
+                                "ts": datetime.now().isoformat(),
+                                "input_root": str(input_root_p),
+                                "output_root": str(output_root_p),
+                                "msg": "Resuming mode: images present, skipping copy",
+                            }
+                        )
+                else:
+                    should_copy = True
+                    if callable(progress_callback):
+                        progress_callback(
+                            {
+                                "stage": "copy_start",
+                                "ts": datetime.now().isoformat(),
+                                "input_root": str(input_root_p),
+                                "output_root": str(output_root_p),
+                                "msg": "Resuming mode: images missing, performing copy",
+                            }
+                        )
+            else:
+                should_copy = False
+                if callable(progress_callback):
+                    progress_callback(
+                        {
+                            "stage": "copy_start",
+                            "ts": datetime.now().isoformat(),
+                            "input_root": str(input_root_p),
+                            "output_root": str(output_root_p),
+                            "msg": "Resuming mode: skipping copy",
+                        }
+                    )
 
         if should_copy:
             if callable(progress_callback):
@@ -451,9 +500,52 @@ class T094PicToJsonPipeline:
                         "output_root": str(output_root_p),
                     }
                 )
-            if output_root_p.exists():
-                shutil.rmtree(output_root_p)
-            shutil.copytree(input_root_p, output_root_p, dirs_exist_ok=False)
+            # 重要：当指定 source_id_filter（单文件/按文件并发）时，禁止删除全局 output_root，
+            # 否则并发任务会互相 rmtree 导致图片“文件不存在”。
+            # 仅清理当前 source_id 的 pic_to_json 子目录即可。
+            if source_id_filter:
+                output_root_p.mkdir(parents=True, exist_ok=True)
+                sid_root = (output_root_p / source_id_filter / "pic_to_json").resolve()
+                try:
+                    if sid_root.exists():
+                        shutil.rmtree(sid_root)
+                except OSError:
+                    # Windows 下可能存在文件句柄占用；失败时继续尝试覆盖拷贝
+                    pass
+            else:
+                # 避免 input_root 与 output_root 相同导致误删或复制到自身
+                if output_root_p.exists() and input_root_p != output_root_p:
+                    shutil.rmtree(output_root_p)
+                output_root_p.mkdir(parents=True, exist_ok=True)
+            cleaned_dirs: list[tuple[Path, Path]] = []
+            try:
+                for sub in sorted(input_root_p.iterdir()):
+                    if not sub.is_dir():
+                        continue
+                    if source_id_filter and sub.name != source_id_filter:
+                        continue
+                    cd = sub / "cleaned_doc"
+                    if cd.exists() and cd.is_dir():
+                        dest = output_root_p / sub.name / "pic_to_json"
+                        cleaned_dirs.append((cd, dest))
+            except OSError:
+                cleaned_dirs = []
+            if cleaned_dirs:
+                for src_dir, dst_dir in cleaned_dirs:
+                    dst_dir.parent.mkdir(parents=True, exist_ok=True)
+                    # 清理旧 chart_json（仅限 pic_to_json 下，安全）
+                    try:
+                        cj = (dst_dir / chart_json_dirname).resolve()
+                        if cj.exists():
+                            shutil.rmtree(cj)
+                    except OSError:
+                        pass
+                    # 若目录已存在（例如 Windows 下前序清理失败），允许覆盖；否则走普通 copytree
+                    shutil.copytree(src_dir, dst_dir, dirs_exist_ok=True)
+            else:
+                # 无 cleaned_doc 时不复制整个根目录；如果两者不同且确有需要再复制
+                if input_root_p != output_root_p:
+                    shutil.copytree(input_root_p, output_root_p, dirs_exist_ok=False)
             if callable(progress_callback):
                 progress_callback(
                     {
@@ -462,24 +554,70 @@ class T094PicToJsonPipeline:
                         "duration_s": round(time.monotonic() - t0, 3),
                     }
                 )
+            # 指定单一 ID 时，工作目录定位到该 ID 的 pic_to_json
+            if source_id_filter:
+                sid_root = output_root_p / source_id_filter / "pic_to_json"
+                try:
+                    sid_root.mkdir(parents=True, exist_ok=True)
+                except OSError:
+                    pass
+                workspace_root = sid_root.resolve()
+                images_root_post = workspace_root / "images"
+                if not images_root_post.exists() or not images_root_post.is_dir():
+                    src_cd = (input_root_p / source_id_filter / "cleaned_doc").resolve()
+                    if src_cd.exists() and src_cd.is_dir():
+                        try:
+                            shutil.copytree(src_cd, workspace_root, dirs_exist_ok=True)
+                        except OSError:
+                            pass
+                stable = False
+                for _ in range(3):
+                    if images_root_post.exists() and images_root_post.is_dir():
+                        any_file = False
+                        try:
+                            for _p in images_root_post.rglob("*"):
+                                if _p.is_file():
+                                    any_file = True
+                                    break
+                        except Exception:
+                            any_file = False
+                        if any_file:
+                            stable = True
+                            break
+                    time.sleep(0.3)
 
         # 2) 扫描 images
         t1 = time.monotonic()
         exts = {".jpg", ".jpeg", ".png", ".webp"}
         images: list[Path] = []
-        for p in workspace_root.rglob("*"):
-            if not p.is_file():
-                continue
-            if p.suffix.lower() not in exts:
-                continue
-            if not any(part.lower() == "images" for part in p.parts):
-                continue
-            images.append(p)
+        if source_id_filter:
+            images_root = workspace_root / "images"
+            if not images_root.exists() or not images_root.is_dir():
+                raise RuntimeError(f"images 目录不存在: {images_root}")
+            for p in images_root.rglob("*"):
+                if not p.is_file():
+                    continue
+                if p.suffix.lower() not in exts:
+                    continue
+                images.append(p)
+        else:
+            for p in workspace_root.rglob("*"):
+                if not p.is_file():
+                    continue
+                if p.suffix.lower() not in exts:
+                    continue
+                if not any(part.lower() == "images" for part in p.parts):
+                    continue
+                if not any(part.lower() == "pic_to_json" for part in p.parts):
+                    continue
+                images.append(p)
 
         images.sort()
         if max_images is not None and max_images > 0:
             images = images[: int(max_images)]
         if not images:
+            if source_id_filter:
+                raise RuntimeError(f"images 目录下未找到任何图片: {workspace_root / 'images'}")
             raise RuntimeError(f"workspace 中未找到任何 images 图片: {workspace_root}")
         if callable(progress_callback):
             progress_callback(
@@ -490,6 +628,26 @@ class T094PicToJsonPipeline:
                     "total_images": len(images),
                 }
             )
+        if callable(progress_callback):
+            try:
+                per_id: dict[str, int] = {}
+                if source_id_filter:
+                    per_id[source_id_filter] = len(images)
+                else:
+                    for p in images:
+                        rel_parts = p.resolve().relative_to(workspace_root).parts
+                        if rel_parts:
+                            sid = rel_parts[0]
+                            per_id[sid] = per_id.get(sid, 0) + 1
+                progress_callback(
+                    {
+                        "stage": "scan_summary",
+                        "ts": datetime.now().isoformat(),
+                        "by_id": per_id,
+                    }
+                )
+            except Exception:
+                pass
 
         # 2.5) 断点续跑状态文件（JSONL）
         state_path = (workspace_root / "t094_state.jsonl").resolve()
@@ -562,153 +720,155 @@ class T094PicToJsonPipeline:
                 await _append_state(state_path, rec, lock=state_lock)
                 state_latest[src] = rec
 
-        # 3) 批量图转 JSON
+        # 3) 批量图转 JSON（按“源文件/目录”并发）
         started_at = datetime.now().isoformat()
         items: list[dict[str, Any]] = []
         non_chart_images: list[Path] = []
-        per_doc_counter: dict[str, int] = {}
+        # 并发单位：doc_dir（每个 source_id 的 pic_to_json 目录）
+        doc_semaphore = asyncio.Semaphore(max(1, int(concurrency)))
+        results_lock = asyncio.Lock()
+        done_count = 0
+        last_unload_at = 0
 
-        semaphore = asyncio.Semaphore(max(1, int(concurrency)))
+        async def _one(image_path: Path, *, per_doc_counter: dict[str, int]) -> dict[str, Any]:
+            rel_image = image_path.relative_to(workspace_root).as_posix()
+            if image_path.parent.name.lower() != "images":
+                raise RuntimeError(f"图片不在 images 目录下: {image_path}")
+            doc_dir = image_path.parent.parent
+            chart_json_dir = doc_dir / chart_json_dirname
+            chart_json_dir.mkdir(parents=True, exist_ok=True)
+            out_json_path = (chart_json_dir / f"{image_path.stem}.json").resolve()
 
-        async def _one(image_path: Path) -> dict[str, Any]:
-            async with semaphore:
-                rel_image = image_path.relative_to(workspace_root).as_posix()
-                if image_path.parent.name.lower() != "images":
-                    raise RuntimeError(f"图片不在 images 目录下: {image_path}")
-                doc_dir = image_path.parent.parent
-                chart_json_dir = doc_dir / chart_json_dirname
-                chart_json_dir.mkdir(parents=True, exist_ok=True)
-                out_json_path = (chart_json_dir / f"{image_path.stem}.json").resolve()
-
-                if resume:
-                    if out_json_path.exists():
+            if resume:
+                if out_json_path.exists():
+                    try:
+                        model_json = json.loads(out_json_path.read_text(encoding="utf-8"))
+                        return {
+                            "source_image": rel_image,
+                            "result_json": out_json_path.relative_to(workspace_root).as_posix(),
+                            "is_chart": True,
+                            "status": "chart",
+                            "should_delete": False,
+                            "chart_id": model_json.get("_chart_id"),
+                            "chart_name": model_json.get("_chart_name"),
+                        }
+                    except Exception:
                         try:
-                            model_json = json.loads(out_json_path.read_text(encoding="utf-8"))
+                            out_json_path.unlink()
+                        except OSError:
+                            pass
+                sig_now = _image_sig(image_path)
+                last = state_latest.get(rel_image)
+                if isinstance(last, dict) and last.get("image_sig") == sig_now:
+                    status = last.get("status")
+                    if status == "chart":
+                        rel_json = last.get("chart_json") or out_json_path.relative_to(workspace_root).as_posix()
+                        if rel_json and (workspace_root / Path(rel_json)).exists():
                             return {
                                 "source_image": rel_image,
-                                "result_json": out_json_path.relative_to(workspace_root).as_posix(),
+                                "result_json": rel_json,
                                 "is_chart": True,
                                 "status": "chart",
                                 "should_delete": False,
-                                "chart_id": model_json.get("_chart_id"),
-                                "chart_name": model_json.get("_chart_name"),
+                                "chart_id": last.get("chart_id"),
+                                "chart_name": last.get("chart_name"),
                             }
-                        except Exception:
-                            try:
-                                out_json_path.unlink()
-                            except OSError:
-                                pass
-                    sig_now = _image_sig(image_path)
-                    last = state_latest.get(rel_image)
-                    if isinstance(last, dict) and last.get("image_sig") == sig_now:
-                        status = last.get("status")
-                        if status == "chart":
-                            rel_json = last.get("chart_json") or out_json_path.relative_to(workspace_root).as_posix()
-                            if rel_json and (workspace_root / Path(rel_json)).exists():
-                                return {
-                                    "source_image": rel_image,
-                                    "result_json": rel_json,
-                                    "is_chart": True,
-                                    "status": "chart",
-                                    "should_delete": False,
-                                    "chart_id": last.get("chart_id"),
-                                    "chart_name": last.get("chart_name"),
-                                }
-                        elif status == "non_chart":
-                            return {
-                                "source_image": rel_image,
-                                "result_json": None,
-                                "is_chart": False,
-                                "status": "non_chart",
-                                "should_delete": True,
-                                "chart_id": None,
-                                "chart_name": None,
-                            }
-                        elif status == "error":
-                            return {
-                                "source_image": rel_image,
-                                "result_json": None,
-                                "is_chart": False,
-                                "status": "error",
-                                "should_delete": False,
-                                "error": last.get("error"),
-                                "chart_id": None,
-                                "chart_name": None,
-                            }
+                    elif status == "non_chart":
+                        return {
+                            "source_image": rel_image,
+                            "result_json": None,
+                            "is_chart": False,
+                            "status": "non_chart",
+                            "should_delete": True,
+                            "chart_id": None,
+                            "chart_name": None,
+                        }
+                    elif status == "error":
+                        return {
+                            "source_image": rel_image,
+                            "result_json": None,
+                            "is_chart": False,
+                            "status": "error",
+                            "should_delete": False,
+                            "error": last.get("error"),
+                            "chart_id": None,
+                            "chart_name": None,
+                        }
 
-                chart_data = await self._chart_to_json(
-                    chart_image_path=str(image_path),
-                    chart_type="other",
-                    strict_json=strict,
+            chart_data = await self._chart_to_json(
+                chart_image_path=str(image_path),
+                chart_type="other",
+                strict_json=strict,
+                timeout_seconds=timeout_seconds,
+            )
+            if chart_data is None:
+                raise RuntimeError(f"图转 JSON 返回空: {image_path}")
+            model_json = chart_data.json_content
+            is_chart = (
+                self._extract_is_chart_strict(model_json, image=image_path)
+                if strict
+                else bool(model_json.get("is_chart"))
+            )
+
+            chart_id = "chart_" + hashlib.sha1(rel_image.encode("utf-8")).hexdigest()[:12]
+            chart_name = self._derive_chart_name(
+                model_json=model_json,
+                doc_dir=doc_dir,
+                image_rel_posix=f"images/{image_path.name}",
+                per_doc_counter=per_doc_counter,
+            )
+
+            model_json = {
+                **model_json,
+                "_chart_id": chart_id,
+                "_chart_name": chart_name,
+                "_source_image": rel_image,
+            }
+
+            if is_chart:
+                out_json_path.write_text(
+                    json.dumps(model_json, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
                 )
-                if chart_data is None:
-                    raise RuntimeError(f"图转 JSON 返回空: {image_path}")
-                model_json = chart_data.json_content
-                is_chart = (
-                    self._extract_is_chart_strict(model_json, image=image_path)
-                    if strict
-                    else bool(model_json.get("is_chart"))
-                )
+                result_json_rel = out_json_path.relative_to(workspace_root).as_posix()
+                status = "chart"
+                should_delete = False
+            else:
+                if out_json_path.exists():
+                    out_json_path.unlink()
+                result_json_rel = None
+                status = "non_chart"
+                should_delete = True
 
-                chart_id = "chart_" + hashlib.sha1(rel_image.encode("utf-8")).hexdigest()[:12]
-                chart_name = self._derive_chart_name(
-                    model_json=model_json,
-                    doc_dir=doc_dir,
-                    image_rel_posix=f"images/{image_path.name}",
-                    per_doc_counter=per_doc_counter,
-                )
+            sig_now = _image_sig(image_path)
+            rec = {
+                "ts": datetime.now().isoformat(),
+                "source_image": rel_image,
+                "status": status,
+                "image_sig": sig_now,
+                "chart_json": result_json_rel,
+                "chart_id": chart_id,
+                "chart_name": chart_name if is_chart else None,
+                "chart_type": model_json.get("chart_type") if isinstance(model_json, dict) else None,
+            }
+            await _append_state(state_path, rec, lock=state_lock)
+            state_latest[rel_image] = rec
 
-                model_json = {
-                    **model_json,
-                    "_chart_id": chart_id,
-                    "_chart_name": chart_name,
-                    "_source_image": rel_image,
-                }
-
-                if is_chart:
-                    out_json_path.write_text(
-                        json.dumps(model_json, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
-                    )
-                    result_json_rel = out_json_path.relative_to(workspace_root).as_posix()
-                    status = "chart"
-                    should_delete = False
-                else:
-                    if out_json_path.exists():
-                        out_json_path.unlink()
-                    result_json_rel = None
-                    status = "non_chart"
-                    should_delete = True
-
-                sig_now = _image_sig(image_path)
-                rec = {
-                    "ts": datetime.now().isoformat(),
-                    "source_image": rel_image,
-                    "status": status,
-                    "image_sig": sig_now,
-                    "chart_json": result_json_rel,
-                    "chart_id": chart_id,
-                    "chart_name": chart_name if is_chart else None,
-                    "chart_type": model_json.get("chart_type") if isinstance(model_json, dict) else None,
-                }
-                await _append_state(state_path, rec, lock=state_lock)
-                state_latest[rel_image] = rec
-
-                return {
-                    "source_image": rel_image,
-                    "result_json": result_json_rel,
-                    "is_chart": is_chart,
-                    "status": status,
-                    "should_delete": should_delete,
-                    "chart_id": chart_id,
-                    "chart_name": chart_name,
-                }
+            return {
+                "source_image": rel_image,
+                "result_json": result_json_rel,
+                "is_chart": is_chart,
+                "status": status,
+                "should_delete": should_delete,
+                "chart_id": chart_id,
+                "chart_name": chart_name,
+            }
 
         t2 = time.monotonic()
 
-        async def _one_with_state(img: Path) -> dict[str, Any]:
+        async def _one_with_state(img: Path, *, per_doc_counter: dict[str, int]) -> dict[str, Any]:
             try:
-                return await _one(img)
+                return await _one(img, per_doc_counter=per_doc_counter)
             except Exception as exc:
                 rel_image = img.relative_to(workspace_root).as_posix()
                 sig_now = _image_sig(img)
@@ -724,52 +884,77 @@ class T094PicToJsonPipeline:
                     state_latest[rel_image] = rec
                 except Exception:
                     pass
-                raise
+                return {
+                    "source_image": rel_image,
+                    "result_json": None,
+                    "is_chart": False,
+                    "status": "error",
+                    "should_delete": False,
+                    "chart_id": None,
+                    "chart_name": None,
+                }
 
-        tasks = [asyncio.create_task(_one_with_state(img)) for img in images]
-        done_count = 0
-        try:
-            for fut in asyncio.as_completed(tasks):
-                row = await fut
-                items.append(row)
-                done_count += 1
-                if row.get("should_delete"):
-                    non_chart_images.append(workspace_root / Path(row["source_image"]))
-                if callable(progress_callback) and (
-                    done_count == 1
-                    or done_count % max(1, int(progress_every)) == 0
-                    or done_count == len(images)
-                ):
-                    progress_callback(
-                        {
-                            "stage": "chart_to_json_progress",
-                            "ts": datetime.now().isoformat(),
-                            "done": done_count,
-                            "total": len(images),
-                            "last_image": row.get("source_image"),
-                            "last_is_chart": row.get("is_chart"),
-                            "last_status": row.get("status"),
-                            "elapsed_s": round(time.monotonic() - t2, 3),
-                        }
-                    )
+        # group images by doc_dir (pic_to_json directory)
+        by_doc: dict[Path, list[Path]] = {}
+        for img in images:
+            doc_dir = img.parent.parent
+            by_doc.setdefault(doc_dir, []).append(img)
 
-                if done_count % 60 == 0:
-                    unloaded = await self.llm_runtime.unload_model_if_ollama(SCOPE_CHART_EXTRACTION)
-                    if unloaded:
-                        if callable(progress_callback):
+        async def _process_doc(doc_dir: Path, imgs: list[Path]) -> None:
+            nonlocal done_count, last_unload_at
+            async with doc_semaphore:
+                per_doc_counter: dict[str, int] = {}
+                for img in imgs:
+                    row = await _one_with_state(img, per_doc_counter=per_doc_counter)
+                    async with results_lock:
+                        items.append(row)
+                        done_count += 1
+                        if row.get("should_delete"):
+                            non_chart_images.append(workspace_root / Path(row["source_image"]))
+
+                        if callable(progress_callback) and (
+                            done_count == 1
+                            or done_count % max(1, int(progress_every)) == 0
+                            or done_count == len(images)
+                        ):
                             progress_callback(
                                 {
-                                    "stage": "ollama_unload",
+                                    "stage": "chart_to_json_progress",
                                     "ts": datetime.now().isoformat(),
-                                    "msg": "Unloaded Ollama model to free GPU memory",
+                                    "done": done_count,
+                                    "total": len(images),
+                                    "last_image": row.get("source_image"),
+                                    "last_is_chart": row.get("is_chart"),
+                                    "last_status": row.get("status"),
+                                    "elapsed_s": round(time.monotonic() - t2, 3),
                                 }
                             )
-                        await asyncio.sleep(2.0)
-        except Exception:
-            for t in tasks:
-                if not t.done():
-                    t.cancel()
-            raise
+
+                        # Ollama only: periodically unload to free GPU memory
+                        if done_count - last_unload_at >= 60:
+                            last_unload_at = done_count
+                            # outside lock: avoid blocking other updates
+                            do_unload = True
+                        else:
+                            do_unload = False
+
+                    if do_unload:
+                        unloaded = await self.llm_runtime.unload_model_if_ollama(
+                            SCOPE_CHART_EXTRACTION
+                        )
+                        if unloaded:
+                            if callable(progress_callback):
+                                progress_callback(
+                                    {
+                                        "stage": "ollama_unload",
+                                        "ts": datetime.now().isoformat(),
+                                        "msg": "Unloaded Ollama model to free GPU memory",
+                                    }
+                                )
+                            await asyncio.sleep(2.0)
+
+        tasks = [asyncio.create_task(_process_doc(d, imgs)) for d, imgs in by_doc.items()]
+        await asyncio.gather(*tasks)
 
         removed_abs: set[Path] = {p.resolve() for p in non_chart_images}
 
@@ -798,6 +983,8 @@ class T094PicToJsonPipeline:
         md_changed = 0
         md_refs_removed = 0
         for md_path in sorted(workspace_root.rglob("*.md")):
+            if not any(part.lower() == "pic_to_json" for part in md_path.parts):
+                continue
             original = md_path.read_text(encoding="utf-8")
             updated, removed_n = self._remove_md_refs(
                 original, md_dir=md_path.parent, removed_abs=removed_abs
@@ -810,6 +997,8 @@ class T094PicToJsonPipeline:
         json_changed = 0
         json_refs_removed = 0
         for jf in sorted(workspace_root.rglob("*.json")):
+            if not any(part.lower() == "pic_to_json" for part in jf.parts):
+                continue
             raw = jf.read_text(encoding="utf-8")
             try:
                 obj = json.loads(raw)
@@ -839,12 +1028,16 @@ class T094PicToJsonPipeline:
         # 6) 一致性校验
         t5 = time.monotonic()
         for md_path in sorted(workspace_root.rglob("*.md")):
+            if not any(part.lower() == "pic_to_json" for part in md_path.parts):
+                continue
             self._validate_no_deleted_refs_in_md(
                 md_path.read_text(encoding="utf-8"),
                 md_dir=md_path.parent,
                 removed_abs=removed_abs,
             )
         for jf in sorted(workspace_root.rglob("*.json")):
+            if not any(part.lower() == "pic_to_json" for part in jf.parts):
+                continue
             obj = json.loads(jf.read_text(encoding="utf-8"))
             self._validate_no_deleted_refs_in_json(obj, base_dir=jf.parent, removed_abs=removed_abs)
         if callable(progress_callback):

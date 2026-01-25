@@ -71,7 +71,7 @@ def create_app() -> FastAPI:
     # 因此默认仅放行本地开发前端（可用环境变量覆盖）。
     raw_origins = os.getenv(
         "LUMO_CORS_ORIGINS",
-        "http://localhost:3000,http://127.0.0.1:3000",
+        "http://localhost:7906,http://127.0.0.1:7906",
     )
     allow_origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
     app.add_middleware(
@@ -165,7 +165,9 @@ def create_app() -> FastAPI:
 
     # 其余业务路由：仅 full 模式加载（避免 kb_* 独立服务被无关依赖阻塞）
     if api_mode == "full":
+        from src.interfaces.api.routes.chart_json import router as chart_json_router
         from src.interfaces.api.routes.intermediates import router as intermediates_router
+        from src.interfaces.api.routes.ingest import router as ingest_router
         from src.interfaces.api.routes.jobs import router as jobs_router
         from src.interfaces.api.routes.llm import router as llm_router
         from src.interfaces.api.routes.prompts import router as prompts_router
@@ -173,7 +175,9 @@ def create_app() -> FastAPI:
         from src.interfaces.api.routes.targets import router as targets_router
         from src.interfaces.api.routes.templates import router as templates_router
 
+        app.include_router(chart_json_router, prefix="/v1")
         app.include_router(intermediates_router, prefix="/v1")
+        app.include_router(ingest_router, prefix="/v1")
         app.include_router(jobs_router, prefix="/v1")
         app.include_router(llm_router, prefix="/v1")
         app.include_router(prompts_router, prefix="/v1")

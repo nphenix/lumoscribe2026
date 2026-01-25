@@ -2,7 +2,7 @@
 id: ai-doc-platform-phase1
 status: IN_PROGRESS
 created: 2026-01-16
-updated: 2026-01-23
+updated: 2026-01-25
 links:
   - ./spec.md
   - ./plan.md
@@ -224,6 +224,10 @@ links:
   - 任务: [`ingest_tasks.py`](src/interfaces/worker/ingest_tasks.py)
   - 编排: MinerU → 清洗 → 图转 JSON → 切块 → 向量写入
   - 中间产物落盘与状态回写
+  - 图转 JSON（T094）触发与逐图日志（测试通过）：
+    - 触发接口：`POST /v1/chart-json/trigger`（支持空请求体触发）
+    - 每张图片日志：`t094.image_done`（包含 source_file_id/image/status/is_chart/progress）
+    - 产物目录：`data/intermediates/{source_file_id}/pic_to_json/chart_json/*.json`
 
 ---
 
@@ -432,7 +436,7 @@ links:
 
 ---
 
-|**版本**: 1.5.2 | **创建**: 2026-01-16 | **最后更新**: 2026-01-23
+|**版本**: 1.5.2 | **创建**: 2026-01-16 | **最后更新**: 2026-01-25
 
 ## 架构变更记录
 

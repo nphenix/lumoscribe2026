@@ -3,7 +3,7 @@
 
 约束：
 - 先完整复制 `data/intermediates_cleaned/` 到 `data/pic_to_json/` 再处理（输出目录即工作快照）
-- LLM/CallSite/Prompt 必须从 SQLite 获取（DB 为单一事实来源）
+- LLM/CallSite/Prompt 必须从 SQLite 获取（DB 为单一事实来源；默认不主动覆盖 DB 配置）
 - 不使用 mock，不降级（strict 模式下无有效 JSON 即失败）
 
 使用示例：
@@ -32,13 +32,13 @@ async def _run() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--input",
-        default=str(PROJECT_ROOT / "data" / "intermediates_cleaned"),
-        help="输入目录（默认：data/intermediates_cleaned）",
+        default=str(PROJECT_ROOT / "data" / "intermediates"),
+        help="输入目录（默认：data/intermediates）",
     )
     parser.add_argument(
         "--output",
-        default=str(PROJECT_ROOT / "data" / "pic_to_json"),
-        help="输出目录（默认：data/pic_to_json）",
+        default=str(PROJECT_ROOT / "data" / "intermediates"),
+        help="输出目录（默认：data/intermediates；复制到每个 {id}/pic_to_json/cleaned_doc）",
     )
     parser.add_argument(
         "--max-images",
@@ -49,8 +49,8 @@ async def _run() -> int:
     parser.add_argument(
         "--concurrency",
         type=int,
-        default=2,
-        help="并发数（默认 2）",
+        default=None,
+        help="并发数（默认：Ollama=1，其它在线 LLM=2；该并发按“源文件/目录”并发，而不是按图片并发）",
     )
     parser.add_argument(
         "--progress-every",
@@ -69,6 +69,11 @@ async def _run() -> int:
         help="恢复模式：跳过复制和已处理的文件",
     )
     parser.add_argument(
+        "--sync-db-seeds",
+        action="store_true",
+        help="运行前同步 chart_extraction 的 prompt/callsite 种子到 SQLite（会改动 DB；默认不执行）",
+    )
+    parser.add_argument(
         "--backfill-state-log",
         default=None,
         help="从历史控制台日志回填 data/pic_to_json/t094_state.jsonl（用于断点续跑，非图表/错误也可跳过）",
@@ -77,6 +82,17 @@ async def _run() -> int:
         "--backfill-only",
         action="store_true",
         help="仅回填 t094_state.jsonl 后退出（不执行图转 JSON 主流程）",
+    )
+    parser.add_argument(
+        "--source-id",
+        default=None,
+        help="仅处理指定源文件 ID（从 data/intermediates/{id}/cleaned_doc 复制）",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=180,
+        help="LLM 调用超时时间（秒，默认 180）",
     )
     args = parser.parse_args()
 
@@ -101,10 +117,22 @@ async def _run() -> int:
             last = evt.get("last_image")
             is_chart = evt.get("last_is_chart")
             status = evt.get("last_status")
+            pct = None
+            try:
+                if isinstance(done, int) and isinstance(total, int) and total > 0:
+                    pct = f"{(done*100)//total}%"
+            except Exception:
+                pct = None
             if status:
-                print(f"[{ts}] [T094] chart_to_json: {done}/{total} status={status} last_is_chart={is_chart} last={last}")
+                if pct:
+                    print(f"[{ts}] [T094] chart_to_json: {done}/{total} ({pct}) status={status} last_is_chart={is_chart} last={last}")
+                else:
+                    print(f"[{ts}] [T094] chart_to_json: {done}/{total} status={status} last_is_chart={is_chart} last={last}")
             else:
-                print(f"[{ts}] [T094] chart_to_json: {done}/{total} last_is_chart={is_chart} last={last}")
+                if pct:
+                    print(f"[{ts}] [T094] chart_to_json: {done}/{total} ({pct}) last_is_chart={is_chart} last={last}")
+                else:
+                    print(f"[{ts}] [T094] chart_to_json: {done}/{total} last_is_chart={is_chart} last={last}")
             return
         if stage == "delete_non_charts_done":
             print(f"[{ts}] [T094] delete_non_charts_done: deleted={evt.get('deleted_images')} ({evt.get('duration_s')}s)")
@@ -125,18 +153,21 @@ async def _run() -> int:
         # fallback
         print(f"[{ts}] [T094] {stage}: {evt}")
 
-    # 前置：确保 prompt 与 callsite 配置已写入 DB
-    print(f"[{_ts()}] [T094] ensure prompt/callsite in SQLite")
-    subprocess.run(
-        [sys.executable, str(PROJECT_ROOT / "scripts" / "update-chart-extraction-prompt.py")],
-        check=True,
-        cwd=str(PROJECT_ROOT),
-    )
-    subprocess.run(
-        [sys.executable, str(PROJECT_ROOT / "scripts" / "update-chart-extraction-callsite.py")],
-        check=True,
-        cwd=str(PROJECT_ROOT),
-    )
+    # 前置：默认不主动覆盖 SQLite（以中台/DB 为准）；如需用代码种子同步，请显式开启
+    if args.sync_db_seeds:
+        print(f"[{_ts()}] [T094] sync chart_extraction seed prompt/callsite into SQLite")
+        subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "scripts" / "update-chart-extraction-prompt.py")],
+            check=True,
+            cwd=str(PROJECT_ROOT),
+        )
+        subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "scripts" / "update-chart-extraction-callsite.py")],
+            check=True,
+            cwd=str(PROJECT_ROOT),
+        )
+    else:
+        print(f"[{_ts()}] [T094] skip sync prompt/callsite seeds (SQLite is source of truth)")
 
     from src.shared.config import get_settings
     from src.shared.db import init_db, make_engine, make_session_factory
@@ -278,6 +309,28 @@ async def _run() -> int:
         print(f"[{_ts()}] [T094] backfill_state_done: {state_path}")
 
     with session_factory() as session:
+        # 自动并发：按 CallSite 绑定 Provider 判断是否为 Ollama
+        # 说明：
+        # - Ollama：通常受 GPU/本地资源约束，默认 1
+        # - 在线 LLM（如 Doubao）：默认 2（按源文件并发）
+        try:
+            from src.shared.constants.prompts import SCOPE_CHART_EXTRACTION
+            callsite = LLMCallSiteRepository(session).get_by_key(SCOPE_CHART_EXTRACTION)
+            provider_type = None
+            if callsite and callsite.provider_id:
+                provider = LLMProviderRepository(session).get_by_id(callsite.provider_id)
+                provider_type = (provider.provider_type if provider else None)
+        except Exception:
+            provider_type = None
+
+        if args.concurrency is None:
+            auto_concurrency = 1 if str(provider_type).strip().lower() == "ollama" else 2
+            concurrency = auto_concurrency
+        else:
+            concurrency = max(1, int(args.concurrency))
+
+        print(f"[{_ts()}] [T094] concurrency={concurrency} provider_type={provider_type}")
+
         llm_runtime = LLMRuntimeService(
             provider_repository=LLMProviderRepository(session),
             capability_repository=LLMCapabilityRepository(session),
@@ -309,10 +362,12 @@ async def _run() -> int:
             output_root=output_root,
             max_images=max_images,
             strict=strict,
-            concurrency=max(1, int(args.concurrency)),
+            concurrency=concurrency,
             progress_callback=_progress,
             progress_every=max(1, int(args.progress_every)),
+            timeout_seconds=args.timeout,
             resume=args.resume,
+            source_id_filter=(args.source_id or None),
         )
 
     print(f"[{_ts()}] [DONE] T094 report: {output_root / 'run_report.json'}")

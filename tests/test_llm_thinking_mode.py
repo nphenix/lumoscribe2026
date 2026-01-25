@@ -23,7 +23,7 @@ def _make_provider(*, model: str, config: dict | None = None) -> LLMProvider:
         key="test-provider",
         name=model,
         provider_type="openai_compatible",
-        base_url="http://localhost:8001/v1",
+        base_url="http://localhost:7907/v1",
         api_key="sk-test",
         api_key_env=None,
         config_json=json.dumps(cfg, ensure_ascii=True),

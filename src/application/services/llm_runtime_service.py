@@ -446,6 +446,61 @@ class LLMRuntimeService:
 
         return eb or None
 
+    def _sanitize_openai_compatible_model_kwargs(
+        self,
+        model_kwargs: dict[str, Any],
+        *,
+        provider: LLMProvider,
+        model_name: str | None,
+    ) -> dict[str, Any]:
+        """移除明显不兼容 OpenAI-compatible 的参数，避免 400。
+
+        背景：我们历史上给 Ollama 会传 `format=json` 等字段；当 CallSite/Provider 切到
+        OpenAI-compatible（例如火山方舟 Doubao）时，这些字段可能被透传到请求体导致失败。
+        """
+        if not model_kwargs:
+            return model_kwargs
+
+        # 仅移除“确定是 Ollama-only”的字段；不要误伤 OpenAI 支持字段（如 stop/response_format 等）
+        disallowed = {
+            "format",
+            "ollama_model",
+            "keep_alive",
+            "num_ctx",
+            "num_gpu",
+            "top_k",
+            "tfs_z",
+            "repeat_last_n",
+            "repeat_penalty",
+            "mirostat",
+            "mirostat_tau",
+            "mirostat_eta",
+            "disable_streaming",
+        }
+
+        cleaned = dict(model_kwargs)
+        removed: dict[str, Any] = {}
+        for k in list(disallowed):
+            if k in cleaned:
+                removed[k] = cleaned.pop(k, None)
+
+        if removed:
+            try:
+                logger.warning(
+                    "removed unsupported openai_compatible model_kwargs",
+                    extra={
+                        "provider_id": getattr(provider, "id", None),
+                        "provider_key": getattr(provider, "key", None),
+                        "provider_type": getattr(provider, "provider_type", None),
+                        "model_name": model_name,
+                        "removed_keys": sorted(list(removed.keys())),
+                    },
+                )
+            except Exception:
+                pass
+
+        return cleaned
+
     def __init__(
         self,
         provider_repository: LLMProviderRepository,
@@ -629,6 +684,10 @@ class LLMRuntimeService:
                 extra_body=extra_body,
                 thinking_enabled=thinking_enabled,
             )
+            if model_kwargs:
+                model_kwargs = self._sanitize_openai_compatible_model_kwargs(
+                    model_kwargs, provider=provider, model_name=model_name
+                )
             params: dict[str, Any] = {
                 "model": model_name,
                 "api_key": api_key,
@@ -669,8 +728,6 @@ class LLMRuntimeService:
             # 这里从 provider_config + callsite_config 做“显式透传”，避免 config_json 无效
             if temperature is not None:
                 params["temperature"] = temperature
-            if max_tokens is not None:
-                params["num_predict"] = max_tokens
             if timeout_seconds is not None:
                 params["timeout"] = timeout_seconds
 

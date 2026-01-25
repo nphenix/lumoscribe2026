@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Integer, String, Text, create_engine, inspect, text
+from sqlalchemy import DateTime, Integer, String, Text, JSON, create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 if TYPE_CHECKING:
@@ -40,6 +40,8 @@ class Job(Base):
     finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    input_summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    result_summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 def make_engine(sqlite_path: Path):
@@ -74,3 +76,12 @@ def _apply_lightweight_sqlite_migrations(engine) -> None:
         if "api_key" not in cols:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE llm_providers ADD COLUMN api_key TEXT"))
+
+    # jobs.input_summary / result_summary
+    if "jobs" in inspector.get_table_names():
+        cols = {c["name"] for c in inspector.get_columns("jobs")}
+        with engine.begin() as conn:
+            if "input_summary" not in cols:
+                conn.execute(text("ALTER TABLE jobs ADD COLUMN input_summary JSON"))
+            if "result_summary" not in cols:
+                conn.execute(text("ALTER TABLE jobs ADD COLUMN result_summary JSON"))
