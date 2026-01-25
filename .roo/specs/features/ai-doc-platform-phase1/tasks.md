@@ -2,7 +2,7 @@
 id: ai-doc-platform-phase1
 status: IN_PROGRESS
 created: 2026-01-16
-updated: 2026-01-21
+updated: 2026-01-23
 links:
   - ./spec.md
   - ./plan.md
@@ -212,13 +212,13 @@ links:
   **相关文件**:
   - 服务: [`hybrid_search_service.py`](src/application/services/hybrid_search_service.py)
   - 检索策略: RRF 融合、Cross-Encoder 重排序、BM25 + Vector 双路召回
-|- [ ] T036 [P1] [US1] 实现 Ingest API 路由（`POST /v1/ingest`），支持单文档/批量摄入
+|- [x] T036 [P1] [US1] 实现 Ingest API 路由（`POST /v1/ingest`），支持单文档/批量摄入
 
   **相关文件**:
   - 路由: [`ingest.py`](src/interfaces/api/routes/ingest.py)
   - Schema: [`ingest.py`](src/application/schemas/ingest.py)
   - 能力: 任务创建、参数配置、异步任务触发
-|- [ ] T037 [P1] [US1] 实现 Ingest Pipeline Celery 任务编排
+|- [-] T037 [P1] [US1] 实现 Ingest Pipeline Celery 任务编排（部分完成：MinerU 阶段）
 
   **相关文件**:
   - 任务: [`ingest_tasks.py`](src/interfaces/worker/ingest_tasks.py)
@@ -395,12 +395,12 @@ links:
   ```powershell
   # 建库/管理端口（不加载上传路由，避免 multipart 依赖）
   $env:LUMO_API_MODE = "kb_admin"
-  $env:LUMO_API_PORT = "8001"
+  $env:LUMO_API_PORT = "7902"
   uv run python -m src.interfaces.api.main
 
   # 查询端口（hybrid + rerank）
   $env:LUMO_API_MODE = "kb_query"
-  $env:LUMO_API_PORT = "8002"
+  $env:LUMO_API_PORT = "7903"
   uv run python -m src.interfaces.api.main
   ```
 |- [x] T096 [P1] 实现生成白皮书功能测试脚本（`test_content_generation.py`）
@@ -432,11 +432,49 @@ links:
 
 ---
 
-|**版本**: 1.5.1 | **创建**: 2026-01-16 | **最后更新**: 2026-01-21
+|**版本**: 1.5.2 | **创建**: 2026-01-16 | **最后更新**: 2026-01-23
 
 ## 架构变更记录
 
-### 2026-01-18: FlagEmbedding 配置项完善
+### 2026-01-24: Ingest Pipeline 增强与 MinerU 修复
+
+|**变更内容**:
+- 增强 `mineru_service.py`: 增加下载与解压逻辑（下载 zip 并解压到 `mineru_raw` 目录）
+- 增强 `ingest_tasks.py`:
+  - 修复异步调用问题（使用 `asyncio.run`）
+  - 完善错误处理：任务失败时重置 source_file 状态为 ACTIVE，避免状态死锁
+  - 完善结果解析与状态回写
+- 增强 `clean_mineru_data.py`: 增加对物理文件目录（`data/intermediates`, `data/sources`）的清理
+
+|**修改文件**:
+- 服务: [`mineru_service.py`](src/application/services/mineru_service.py)
+- Worker: [`ingest_tasks.py`](src/interfaces/worker/ingest_tasks.py)
+- 脚本: [`clean_mineru_data.py`](scripts/clean_mineru_data.py)
+
+|**影响任务**:
+- T030: ✅ 修复落盘问题
+- T037: 🚧 MinerU 阶段健壮性提升
+
+### 2026-01-23: Ingest API 与 Pipeline 初步实现
+
+|**变更内容**:
+- 新增 Ingest API 路由（`POST /v1/ingest/trigger`、`GET /v1/ingest/jobs`、`GET /v1/ingest/jobs/{id}`、`GET /v1/ingest/jobs/{id}/progress`）
+- 新增 Ingest Pipeline Celery 任务编排（当前仅完成 MinerU 阶段）
+- 新增 `source_file` 状态：`MINERU_PROCESSING` 和 `MINERU_COMPLETED`
+- 注册 `ingest_router` 到应用
+
+|**新增文件**:
+- Schema: [`ingest.py`](src/application/schemas/ingest.py)（81 行）
+- 路由: [`ingest.py`](src/interfaces/api/routes/ingest.py)（255 行）
+- Worker 任务: [`ingest_tasks.py`](src/interfaces/worker/ingest_tasks.py)（230 行）
+
+|**修改文件**:
+- Entity: [`source_file.py`](src/domain/entities/source_file.py)（新增状态枚举值）
+- 应用: [`app.py`](src/interfaces/api/app.py)（注册 ingest_router）
+
+|**影响任务**:
+- T036: ✅ 已完成
+- T037: ⚠️ 部分完成（MinerU 阶段），待集成清洗/图转JSON/切块/向量写入
 
 |**变更内容**:
 - 为 `flagembedding` Provider 类型添加完整的配置项支持
