@@ -56,3 +56,6 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 celerybeat-schedule
+
+# External Projects (not part of this repo)
+TTsending/
