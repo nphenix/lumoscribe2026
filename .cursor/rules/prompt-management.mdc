@@ -1,5 +1,5 @@
 ---
-description: 提示词管理与开发规范（禁止硬编码，使用Registry）
+description: 鎻愮ず璇嶇鐞嗕笌寮€鍙戣鑼冿紙绂佹纭紪鐮侊紝浣跨敤Registry锛?
 globs: src/**/*.py
 alwaysApply: true
 ---

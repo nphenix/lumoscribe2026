@@ -1,6 +1,3 @@
-﻿---
-description: 鎻愮ず璇嶇鐞嗕笌寮€鍙戣鑼冿紙绂佹纭紪鐮侊紝浣跨敤Registry锛?
----
 # 提示词管理与开发规范
 
 > 本文档定义了项目中的提示词（Prompt）管理策略、开发流程与最佳实践。
@@ -98,4 +95,3 @@ Scope 命名采用 `module:action` 或 `module:submodule:action` 格式，小写
 - [ ] 是否引入了新的 Prompt？如果是，是否添加到了 `constants/prompts.py`？
 - [ ] 业务代码是否注入了 `PromptService`？
 - [ ] 是否存在硬编码的 Prompt 字符串？
-

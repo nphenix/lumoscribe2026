@@ -2,7 +2,7 @@
 id: ai-doc-platform-phase1
 status: IN_PROGRESS
 created: 2026-01-16
-updated: 2026-01-25
+updated: 2026-01-26
 links:
   - ./spec.md
   - ./plan.md
@@ -367,10 +367,12 @@ links:
 |- [x] T095 [P1] 实现知识库构建功能测试脚本（真实数据 + hybrid+rerank + 可独立端口部署）（`test_knowledge_base.py`）
 
   **测试范围**:
-  - 基于 T094 真实产物（`data/pic_to_json`）进行建库（非 mock）
+  - 基于 T094 真实产物（`data/intermediates/{id}/pic_to_json`）进行建库（非 mock）
   - 文档切分质量验证（结构切分 + 去噪）
   - ChromaDB 向量写入与检索（Embedding 通过 T023 CallSite 注入）
-  - **BM25 预建索引**：建库阶段生成并落盘 `data/intermediates/kb_chunks/<collection>/<ts>_<build_id>.bm25.json`；查询阶段加载使用
+  - **BM25 预建索引**：建库阶段生成并落盘 `data/intermediates/kb_chunks/<collection>/<ts>_<build_id>.bm25.json`
+  - **BM25 多索引加载（方案 B）**：查询阶段加载同 collection 的**全部** BM25 索引（默认最多 50 个），跨索引聚合结果后按 `chunk_id` 去重（保留最高分），再排序返回 top_k，确保覆盖与向量库一致
+  - **注意（重要）**：若对同一 `collection` 执行过 `recreate/reset`（向量库被删除重建），务必同步清理历史 `kb_chunks` 工件，否则“多索引加载”可能读到已失效的旧 BM25 索引并引入过期内容（可用 `scripts/t095-reset-kb.py --delete-artifacts` 清理）
   - 固定检索策略：Hybrid（BM25+Vector+RRF） + Rerank（通过 T023 CallSite 注入）
   - 可追溯来源（doc_title / doc_rel_path / source_file_id / original_filename）
   - **服务端为主**：测试仅调用 API，不在测试脚本内实现业务逻辑
@@ -385,7 +387,7 @@ links:
 
   **测试命令（PowerShell）**:
   ```powershell
-  # 运行 T095 测试（使用真实 data/pic_to_json）
+  # 运行 T095 测试（使用真实 data/intermediates/{id}/pic_to_json）
   uv run pytest -q "tests/test_knowledge_base.py" -k t095 --maxfail=1
   ```
 
@@ -424,7 +426,7 @@ links:
 
   **测试命令（PowerShell）**:
   ```powershell
-  # 运行 T096 测试（使用真实 data/pic_to_json）
+  # 运行 T096 测试（使用真实 data/intermediates/{id}/pic_to_json）
   uv run pytest -q "tests/test_content_generation.py" -v --tb=short
   ```
 
