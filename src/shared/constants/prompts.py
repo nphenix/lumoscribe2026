@@ -15,6 +15,12 @@ from src.application.services.content_generation.prompts import (
 )
 from src.application.services.content_generation.prompts import (
     SCOPE_CONTENT_GENERATION_SECTION,
+    SCOPE_OUTLINE_POLISH as SCOPE_CONTENT_OUTLINE_POLISH,
+)
+from src.application.services.outline_polish.prompts import (
+    PROMPTS as OUTLINE_POLISH_PROMPTS,
+)
+from src.application.services.outline_polish.prompts import (
     SCOPE_OUTLINE_POLISH,
 )
 
@@ -23,6 +29,7 @@ __all__ = [
     "SCOPE_DOC_CLEANING",
     "SCOPE_CHART_EXTRACTION",
     "SCOPE_CONTENT_GENERATION_SECTION",
+    "SCOPE_CONTENT_OUTLINE_POLISH",
     "SCOPE_OUTLINE_POLISH",
     "DEFAULT_PROMPTS",
 ]
@@ -31,6 +38,7 @@ __all__ = [
 DEFAULT_PROMPTS = {
     **DOC_CLEANING_PROMPTS,
     **CONTENT_GENERATION_PROMPTS,
+    **OUTLINE_POLISH_PROMPTS,
     # 未来在此处聚合其他模块的提示词
     # **ANOTHER_MODULE_PROMPTS,
 }

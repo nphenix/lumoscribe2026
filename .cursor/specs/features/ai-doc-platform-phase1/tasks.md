@@ -227,7 +227,7 @@ links:
   - 图转 JSON（T094）触发与逐图日志（测试通过）：
     - 触发接口：`POST /v1/chart-json/trigger`（支持空请求体触发）
     - 每张图片日志：`t094.image_done`（包含 source_file_id/image/status/is_chart/progress）
-    - 产物目录：`data/intermediates/{source_file_id}/pic_to_json/chart_json/*.json`
+    - 产物目录：`data/pic_to_json/{source_file_id}/pic_to_json/chart_json/*.json`
 
 ---
 
@@ -241,13 +241,30 @@ links:
    - 服务: [`template_service.py`](src/application/services/template_service.py)
    - Schema: [`template.py`](src/application/schemas/template.py)
    - 能力: 占位符校验 (\{\{\w+\}\})、Markdown 结构校验、Office 格式校验、模板锁定
+   - **模板存储路径**: 
+     - 大纲模板: `data/Templates/drafts/{filename}.md`
+     - 自定义模板: `data/templates/custom/{workspace}/{id}.md`
+     - 系统模板: `data/templates/system/{workspace}/{id}`
 |- [x] T041 [P1] [US3] RAG 检索与上下文组装（基于 LlamaIndex 混合检索 +  Rerank）
+
+   **前置条件**:
+   - ✅ 知识库 collection 已创建（ChromaDB 向量库）
+   - ✅ BM25 索引文件已生成（`data/intermediates/kb_chunks/{collection}/{ts}_{build_id}.bm25.json`）
+   - ✅ LLM Provider 配置已就绪（支持 Rerank 模型调用）
+   - ✅ `intermediate_artifacts` 表中存在 chunk 记录
 
    **相关文件**:
    - 服务: [`hybrid_search_service.py`](src/application/services/hybrid_search_service.py)
    - Schema: [`ingest.py`](src/application/schemas/ingest.py)
    - 能力: 向量检索、BM25 检索、RRF 融合、Cross-Encoder 重排序、上下文组装
-|- [x] T042 [P1] [US3] 按模板 section 生成内容（推理 LLM 润色），召回的图表要使用T043能力重新渲染，输出单 HTML 并写入 `target_files`
+|- [x] T042 [P1] [US3] 按模板 section 生成内容（推理 LLM 润色），从 RAG 检索结果中自动检测并渲染图表（调用 T043），输出单 HTML 并写入 `target_files`
+
+   **前置条件**:
+   - ✅ 模板记录已就绪（来自 T040）
+   - ✅ RAG 检索上下文已生成（来自 T041）
+   - ✅ `target_files` 表记录已创建
+   - ✅ LLM Provider 配置就绪
+   - ✅ `content_generation:section` CallSite 已配置
 
    **相关文件**:
    - 服务: [`content_generation_service.py`](src/application/services/content_generation_service.py)
@@ -255,23 +272,24 @@ links:
    - 能力: 模板 section 解析、RAG 上下文注入、LLM 内容生成、Markdown 转 HTML、最终 HTML 组装
 |- [x] T043 [P2] [US3] 图表 JSON → 图表渲染原子能力（基于 JSON 动态绘制 SVG/PNG/HTML snippet）
 
+   **前置条件**:
+   - ✅ 图表 JSON 配置数据已生成（来自 T094）
+   - ✅ 静态资源（ECharts/Chart.js/D3.js）已部署
+   - ✅ 对应图表 JSON 文件已落盘（`data/pic_to_json/{source_id}/pic_to_json/chart_json/*.json`）
+
+   **能力限制**:
+   - ⚠️ ECharts 不支持 SVG/PNG 原生输出（仅支持 HTML/Canvas）
+
    **相关文件**:
    - 服务: [`chart_renderer_service.py`](src/application/services/chart_renderer_service.py)
    - Schema: [`chart_spec.py`](src/application/schemas/chart_spec.py)
-   - 能力: ECharts 渲染、Chart.js 渲染、动态图表生成、SVG/PNG/HTML 输出
-|- [ ] T044 [P1] [US3] 实现 Generate API 路由（`POST /v1/generate`），支持模板+知识库生成
+   - 能力: ECharts 渲染、Chart.js 渲染、D3.js 渲染、SVG/PNG/HTML 输出
+|- [-] T044 [P1] [US3] 实现 Generate API 路由（`POST /v1/generate`），支持模板+知识库生成
 
    **相关文件**:
    - 路由: [`generate.py`](src/interfaces/api/routes/generate.py)
    - Schema: [`content_generation.py`](src/application/schemas/content_generation.py)
-   - 能力: 任务创建、大纲润色选项、异步任务触发
-|- [ ] T045 [P1] [US3] 实现 Generate Pipeline Celery 任务编排
-
-   **相关文件**:
-   - 任务: [`generate_tasks.py`](src/interfaces/worker/generate_tasks.py)
-   - 编排: 模板解析 → RAG 检索 → 内容生成 → 图表渲染 → HTML 组装
-   - 目标文件落盘与状态回写
-
+   - 能力: 任务创建、大纲润色选项、异步任务触发（同步模式先实现）
 ---
 
 ## 阶段6：中台管理前端（Next.js + Shadcn UI）
@@ -362,17 +380,18 @@ links:
   **关键约束（避免遗漏）**:
   - **依赖 T097 输出完整性**：T094 的输入来自 `data/intermediates/{id}/cleaned_doc/`，需要 **完整保留** `md/json/images`，用于图表定位与后续图转 JSON。
   - **图片链接必须可追溯**：T097 清洗后 Markdown 中的图片引用（`![](images/xxx.jpg)`）必须保留（至少保留链接信息），否则 T094 无法可靠关联图片与正文位置。
-  - **不要在 T094 前做不可逆裁剪**：封面/作者照/版权页等“装饰性图片”的**文件删除或 JSON 剔除**应在 T094 之后、且基于图表识别结果（“有意义图表白名单/装饰图黑名单”）再执行，避免误删图表导致 T094 失败。
-  - **建议产出清单工件**：T094 测试中建议落盘“识别为有意义图表的图片列表”（如 `chart_image_paths` / `chart_ids`），供后续阶段做装饰图剔除与 UI 关联。
+  - **不要在 T094 前做不可逆裁剪**：封面/作者照/版权页等"装饰性图片"的**文件删除或 JSON 剔除**应在 T094 之后、且基于图表识别结果（"有意义图表白名单/装饰图黑名单"）再执行，避免误删图表导致 T094 失败。
+  - **建议产出清单工件**：T094 测试中建议落盘"识别为有意义图表的图片列表"（如 `chart_image_paths` / `chart_ids`），供后续阶段做装饰图剔除与 UI 关联。
+  - **实际落盘路径**：图转 JSON 产物输出至 `data/pic_to_json/{source_id}/pic_to_json/chart_json/` 目录
 |- [x] T095 [P1] 实现知识库构建功能测试脚本（真实数据 + hybrid+rerank + 可独立端口部署）（`test_knowledge_base.py`）
 
   **测试范围**:
-  - 基于 T094 真实产物（`data/intermediates/{id}/pic_to_json`）进行建库（非 mock）
+  - 基于 T094 真实产物（`data/pic_to_json/{id}/pic_to_json`）进行建库（非 mock）
   - 文档切分质量验证（结构切分 + 去噪）
   - ChromaDB 向量写入与检索（Embedding 通过 T023 CallSite 注入）
   - **BM25 预建索引**：建库阶段生成并落盘 `data/intermediates/kb_chunks/<collection>/<ts>_<build_id>.bm25.json`
   - **BM25 多索引加载（方案 B）**：查询阶段加载同 collection 的**全部** BM25 索引（默认最多 50 个），跨索引聚合结果后按 `chunk_id` 去重（保留最高分），再排序返回 top_k，确保覆盖与向量库一致
-  - **注意（重要）**：若对同一 `collection` 执行过 `recreate/reset`（向量库被删除重建），务必同步清理历史 `kb_chunks` 工件，否则“多索引加载”可能读到已失效的旧 BM25 索引并引入过期内容（可用 `scripts/t095-reset-kb.py --delete-artifacts` 清理）
+  - **注意（重要）**：若对同一 `collection` 执行过 `recreate/reset`（向量库被删除重建），务必同步清理历史 `kb_chunks` 工件，否则"多索引加载"可能读到已失效的旧 BM25 索引并引入过期内容（可用 `scripts/t095-reset-kb.py --delete-artifacts` 清理）
   - 固定检索策略：Hybrid（BM25+Vector+RRF） + Rerank（通过 T023 CallSite 注入）
   - 可追溯来源（doc_title / doc_rel_path / source_file_id / original_filename）
   - **服务端为主**：测试仅调用 API，不在测试脚本内实现业务逻辑
@@ -387,7 +406,7 @@ links:
 
   **测试命令（PowerShell）**:
   ```powershell
-  # 运行 T095 测试（使用真实 data/intermediates/{id}/pic_to_json）
+  # 运行 T095 测试（使用真实 data/pic_to_json/{id}/pic_to_json）
   uv run pytest -q "tests/test_knowledge_base.py" -k t095 --maxfail=1
   ```
 
@@ -417,6 +436,7 @@ links:
   - LLM 生成内容与模板格式对齐
   - 图表渲染正确性
   - **大纲润色功能验证**（polish_outline）
+  - **输入路径**：基于 T094 真实产物（`data/pic_to_json/{id}/pic_to_json`）
 
   **相关文件**:
   - 测试: [`test_content_generation.py`](tests/test_content_generation.py)
@@ -426,7 +446,7 @@ links:
 
   **测试命令（PowerShell）**:
   ```powershell
-  # 运行 T096 测试（使用真实 data/intermediates/{id}/pic_to_json）
+  # 运行 T096 测试（使用真实 data/pic_to_json/{id}/pic_to_json）
   uv run pytest -q "tests/test_content_generation.py" -v --tb=short
   ```
 
@@ -438,7 +458,69 @@ links:
 
 ---
 
-|**版本**: 1.5.2 | **创建**: 2026-01-16 | **最后更新**: 2026-01-25
+## 阶段7：大纲优化 AI 助手
+
+|**目标**: 基于 LangChain 1.0 能力提供大纲优化服务，支持中台配置 LLM 模型。
+
+|- [x] T060 [P0] 实现 OutlinePolishService（基于 LangChain Agent 封装）
+
+   **相关文件**:
+   - 服务: [`outline_polish_service.py`](src/application/services/outline_polish/outline_polish_service.py) ✅
+   - 提示词: [`prompts.py`](src/application/services/outline_polish/prompts.py) ✅（系统消息模板 + 用户消息模板）
+   - 调用点: [`callsites.py`](src/application/services/outline_polish/callsites.py) ✅
+   - Schema: [`schema.py`](src/application/services/outline_polish/schema.py) ✅（Pydantic 输入/输出模型）
+   - 目录说明: [`00-目录说明.md`](src/application/services/outline_polish/00-目录说明.md) ✅
+   - 能力: 使用 `create_agent()` + `ToolStrategy` 封装 Agent
+   - LLM 选择: 复用 `content_generation:polish_outline` CallSite，支持中台配置指定模型
+   - 遵循提示词规范: 通过 `PromptService` 获取 `SCOPE_OUTLINE_POLISH`
+   - 输出约束: 使用 Pydantic 定义 `PolishedOutline` Schema（ToolStrategy）
+   - 可扩展性: 支持添加大纲校验工具、格式转换工具等
+   - 输入: 用户大纲文本（Markdown 格式）
+   - 输出: 润色后的大纲文本（Markdown 格式）
+   - **系统消息模板**: 包含角色定义（文档大纲优化专家）、行业背景（储能行业/市场研究报告/中文）、内容要求（基于事实数据、引用可靠信息源）、结构要求（清晰层次、逻辑顺序、保留核心关键词）
+   - **LangChain 最佳实践**: 使用 `create_agent()`、`ToolStrategy`、`system_prompt` 参数、`result["structured_response"]`
+
+|- [x] T061 [P0] 新增 Outline Schema（大纲请求/响应结构）
+
+   **相关文件**:
+   - Schema: [`outline.py`](src/application/schemas/outline.py)
+   - 请求: `OutlinePolishRequest` (`outline: str`)
+   - 响应: `OutlinePolishResponse` (`polished_outline: str`)
+   - 保存请求: `OutlineSaveRequest` (`outline: str`, `filename: str`)
+   - 保存响应: `OutlineSaveResponse` (`file_path: str`)
+
+|- [x] T062 [P0] 新增 `/v1/outline/*` API 路由
+
+   **相关文件**:
+   - 路由: [`outline.py`](src/interfaces/api/routes/outline.py)
+   - 端点:
+     - `POST /v1/outline/polish` - 大纲润色（调用 LLM）
+     - `POST /v1/outline/save` - 保存大纲为 MD 文件
+   - 能力:
+     - 接收用户输入的大纲文本
+     - 调用 T060 服务执行润色
+     - 返回润色后的大纲（供前端文本框显示）
+     - 用户确认后落盘到 `data/Templates/drafts/`
+
+|- [x] T063 [P1] 初始化保存目录 `data/Templates/drafts/`
+
+   **相关文件**:
+   - 目录: `data/Templates/drafts/`
+   - 命名规则: `{filename}.md`（如用户提供 `my-outline`，保存为 `data/Templates/drafts/my-outline.md`）
+   - 文件格式: 纯 Markdown 内容
+
+|- [x] T064 [P1] 单元测试
+
+   **相关文件**:
+   - 测试: [`test_outline_polish.py`](tests/test_outline_polish.py)
+   - 测试范围:
+     - Service 单元测试（mock LLM Runtime）
+     - API 集成测试（polish + save 端点）
+     - 文件落盘验证
+
+---
+
+|**版本**: 1.6.0 | **创建**: 2026-01-16 | **最后更新**: 2026-01-26
 
 ## 架构变更记录
 

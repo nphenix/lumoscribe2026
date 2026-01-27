@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     同步 speckit/ 目录到 .cursor/ 和 .roo/
 
@@ -235,11 +235,12 @@ description: $Description
         }
         # -----------------------------------------------------------
 
-        $ContentTargetPath = if ($TargetPath -like "*.cursor*") {
-            $sourceInfo.CursorPath
-        }
-        else {
-            $sourceInfo.RooPath
+        # 目标内容目录：按工具区分（Cursor/Roo/Trae）
+        $ContentTargetPath = switch ($TargetName) {
+            "Cursor"   { $sourceInfo.CursorPath }
+            "Roo Code" { $sourceInfo.RooPath }
+            "Trae IDE" { $sourceInfo.TraePath }
+            default    { $sourceInfo.RooPath }
         }
         
         Write-Host "[$contentType] 同步到 $TargetName..." -ForegroundColor Green
@@ -450,8 +451,9 @@ description: 提示词管理与开发规范（禁止硬编码，使用Registry�
         }
         
         try {
-            $result = Start-Process -FilePath "robocopy" -ArgumentList $RobocopyParams -NoNewWindow -Wait -PassThru
-            $exitCode = $result.ExitCode
+            # 直接调用 robocopy，避免 Start-Process 在某些环境下因 PATH/Path 重复而构建环境变量字典失败
+            & robocopy @RobocopyParams | Out-Null
+            $exitCode = $LASTEXITCODE
             
             $SyncResults += @{
                 Content = $contentType

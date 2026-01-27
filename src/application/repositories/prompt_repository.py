@@ -113,3 +113,12 @@ class PromptRepository:
         if rows:
             self.db.commit()
         return len(rows)
+
+    def get_active_prompt(self, scope: str) -> Prompt | None:
+        """获取指定 scope 的激活提示词。"""
+        return (
+            self.db.query(Prompt)
+            .filter(Prompt.scope == scope, Prompt.active.is_(True))
+            .order_by(Prompt.version.desc())
+            .first()
+        )

@@ -1,7 +1,7 @@
 """T096: 白皮书生成（服务端）功能测试。
 
 约束（对齐项目要求）：
-- 使用真实数据（依赖 T094 产出 data/pic_to_json），不使用 mock
+- 使用真实数据（依赖 T094 产出 data/intermediates/**/pic_to_json），不使用 mock
 - 核心逻辑在服务端（API + Service），测试只做调用与验收
 - 生成流程：按章节/子章节先做 RAG 召回，覆盖不足由 LLM 补全，输出单 HTML 并写入 target_files
 
@@ -62,7 +62,8 @@ def _extract_some_outline_items(md: str, limit: int = 6) -> list[str]:
 
 
 def test_t096_whitepaper_generate_from_drafts_real_data_real_llm():
-    input_root = Path("data") / "pic_to_json"
+    # 新路径：T094 产出落在 data/intermediates/{source_file_id}/pic_to_json/
+    input_root = Path("data") / "intermediates"
     if not input_root.exists():
         raise RuntimeError(f"缺少真实数据目录，请先跑 T094：{input_root.as_posix()}")
 
@@ -85,7 +86,7 @@ def test_t096_whitepaper_generate_from_drafts_real_data_real_llm():
             "input_root": input_root.as_posix(),
             "collection_name": collection_name,
             "recreate": True,
-            # 覆盖多篇文档，避免生成阶段“只有一个来源文档”
+            # 覆盖多篇文档（从 data/intermediates/**/pic_to_json/*.md 选择，每目录唯一）
             "max_docs": 6,
             "chunk_size": 900,
             "chunk_overlap": 80,
@@ -165,9 +166,9 @@ def test_t096_outline_polish_real_llm_smoke():
 
     # 通过生成端点间接触发 polish（使用 drafts 文件作为输入）
     outline_path = _pick_outline_draft()
-    input_root = Path("data") / "pic_to_json"
+    input_root = Path("data") / "intermediates"
     if not input_root.exists():
-        pytest.skip("缺少 data/pic_to_json，无法跑端到端真实环境测试")
+        pytest.skip("缺少 data/intermediates，无法跑端到端真实环境测试")
 
     collection_name = f"t096_polish_{uuid4().hex[:8]}"
 
@@ -214,7 +215,7 @@ def run_t096_e2e(
     outline_filename: str,
     workspace_id: str = "default",
     collection_name: str | None = None,
-    input_root: str = "data/pic_to_json",
+    input_root: str = "data/intermediates",
     max_docs: int = 6,
     recreate: bool = True,
     polish_outline: bool = False,
@@ -298,7 +299,7 @@ def _main() -> int:
         help="drafts 目录下的大纲文件名",
     )
     parser.add_argument("--collection", default="", help="collection 名称（为空则自动生成）")
-    parser.add_argument("--max-docs", type=int, default=6, help="建库最多处理多少个 full.md（默认 6）")
+    parser.add_argument("--max-docs", type=int, default=6, help="建库最多处理多少个 pic_to_json 主文档（默认 6）")
     parser.add_argument("--no-recreate", action="store_true", help="建库时不重建 collection")
     parser.add_argument("--polish-outline", action="store_true", help="是否润色大纲（可能改变标题，不建议严格模式下开启）")
     parser.add_argument("--cleanup", action="store_true", help="完成后清理 target 与 collection（默认不清理，会保留生成的 html）")

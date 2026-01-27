@@ -41,7 +41,8 @@ from src.application.services.hybrid_search_service import HybridSearchService
 from src.application.services.knowledge_base_service import (
     KnowledgeBaseBuildOptions,
     KnowledgeBaseService,
-    resolve_latest_bm25_index_storage_path,
+    _parse_json_maybe,
+    resolve_all_bm25_index_storage_paths,
 )
 from src.application.services.llm_runtime_service import LLMRuntimeService
 from src.application.services.vector_storage_service import VectorStorageService
@@ -49,17 +50,23 @@ from src.domain.entities.intermediate_artifact import IntermediateArtifact, Inte
 from src.interfaces.api.deps import get_db
 from src.shared.config import get_settings
 from src.shared.db import make_engine, make_session_factory
+from src.shared.logging import get_logger
 
 
 router_admin = APIRouter()
 router_query = APIRouter()
+log = get_logger(__name__)
 
 
 class KBBuildRequest(BaseModel):
-    input_root: str = Field(..., min_length=1, description="输入根目录（例如 data/pic_to_json）")
+    input_root: str = Field(
+        ...,
+        min_length=1,
+        description="输入根目录（例如 data/intermediates/{source_file_id}/pic_to_json）",
+    )
     collection_name: str = Field(default="default", description="Chroma collection 名称")
     recreate: bool = Field(default=False, description="是否重建 collection（会先删除再写入）")
-    max_docs: int | None = Field(default=None, ge=1, description="最多处理多少个 full.md（为空则全量）")
+    max_docs: int | None = Field(default=None, ge=1, description="最多处理多少个 md（为空则全量）")
     workspace_id: str = Field(default="default", description="工作空间 ID（用于写入 intermediate_artifacts）")
     chunk_size: int | None = Field(default=None, ge=100, le=8192)
     chunk_overlap: int | None = Field(default=None, ge=0, le=512)
@@ -133,12 +140,22 @@ def _make_llm_runtime(session: Session) -> LLMRuntimeService:
     "/kb/build",
     response_model=KBBuildResponse,
     summary="构建知识库（T095）",
-    description="基于输入目录（例如 data/pic_to_json）完成切块与向量入库，并落盘 kb_chunks 工件用于中台观测。",
+    description="基于输入目录（例如 data/intermediates/{source_file_id}/pic_to_json）完成切块与向量入库，并落盘 kb_chunks 工件用于中台观测。",
 )
 async def build_kb(
     req: KBBuildRequest,
     db: Session = Depends(get_db),
 ):
+    log.info(
+        "t095.kb_build.requested",
+        extra={
+            "collection_name": req.collection_name,
+            "input_root": req.input_root,
+            "recreate": req.recreate,
+            "max_docs": req.max_docs,
+            "workspace_id": req.workspace_id,
+        },
+    )
     llm_runtime = _make_llm_runtime(db)
     embedder = llm_runtime.get_model_for_callsite("vector_storage:embed_text")
 
@@ -172,6 +189,17 @@ async def build_kb(
         ),
         workspace_id=req.workspace_id,
     )
+    log.info(
+        "t095.kb_build.completed",
+        extra={
+            "collection_name": req.collection_name,
+            "success": bool(result.get("success")),
+            "docs_indexed": result.get("docs_indexed"),
+            "chunks_indexed": result.get("chunks_indexed"),
+            "artifact_id": result.get("artifact_id"),
+            "artifact_storage_path": result.get("artifact_storage_path"),
+        },
+    )
     return KBBuildResponse(**result)
 
 
@@ -183,6 +211,15 @@ def _run_kb_build_in_thread(*, build_id: str, artifact_storage_path: str, req: K
 
     db = session_factory()
     try:
+        log.info(
+            "t095.kb_build.thread_started",
+            extra={
+                "build_id": build_id,
+                "collection_name": req.collection_name,
+                "input_root": req.input_root,
+                "artifact_storage_path": artifact_storage_path,
+            },
+        )
         artifact_repo = IntermediateArtifactRepository(db)
 
         # 标记：开始加载模型
@@ -242,7 +279,23 @@ def _run_kb_build_in_thread(*, build_id: str, artifact_storage_path: str, req: K
                 workspace_id=req.workspace_id,
             )
         )
+        log.info(
+            "t095.kb_build.thread_finished",
+            extra={
+                "build_id": build_id,
+                "collection_name": req.collection_name,
+                "artifact_storage_path": artifact_storage_path,
+            },
+        )
     except Exception as exc:  # noqa: BLE001
+        log.exception(
+            "t095.kb_build.thread_failed",
+            extra={
+                "build_id": build_id,
+                "collection_name": req.collection_name,
+                "artifact_storage_path": artifact_storage_path,
+            },
+        )
         # 尽量写入失败态，便于观测（避免线程静默失败）
         try:
             repo = IntermediateArtifactRepository(db)
@@ -288,6 +341,18 @@ def start_kb_build_job(
     build_id = str(uuid4())
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     artifact_storage_path = f"intermediates/kb_chunks/{req.collection_name}/{ts}_{build_id}.json"
+    log.info(
+        "t095.kb_build.job_queued",
+        extra={
+            "build_id": build_id,
+            "collection_name": req.collection_name,
+            "input_root": req.input_root,
+            "artifact_storage_path": artifact_storage_path,
+            "recreate": req.recreate,
+            "max_docs": req.max_docs,
+            "workspace_id": req.workspace_id,
+        },
+    )
 
     # 先写入 DB（保证 build_id 可立即查询）
     initial = {
@@ -428,7 +493,7 @@ async def query_kb(
     reranker = llm_runtime.get_model_for_callsite("hybrid_search:rerank")
 
     vector_service = VectorStorageService(embedding_model=embedder)
-    bm25_path = resolve_latest_bm25_index_storage_path(
+    bm25_paths = resolve_all_bm25_index_storage_paths(
         db=db,
         collection_name=req.collection_name,
         workspace_id=req.workspace_id,
@@ -437,7 +502,7 @@ async def query_kb(
         vector_service=vector_service,
         collection_name=req.collection_name,
         reranker=reranker,
-        bm25_index_storage_path=bm25_path,
+        bm25_index_storage_paths=bm25_paths,
     )
     kb_service = KnowledgeBaseService(
         chunking_service=DocumentChunkingService(config=ChunkingConfig()),

@@ -2,7 +2,7 @@
 
 设计目标：
 - 核心逻辑在服务端，测试脚本仅调用与验收
-- 输入基于 T094 的真实产物目录（data/pic_to_json）
+- 输入基于 T094 的真实产物目录（data/intermediates/{source_file_id}/pic_to_json）
 - chunk 元数据可追溯：source_file_id(UUID)/original_filename/doc_title/doc_rel_path/chart_id/chart_name
 - 模型依赖通过 T023 注入：embedding/rerank（不在此处硬编码）
 """
@@ -36,6 +36,7 @@ from src.application.services.hybrid_search_service import HybridSearchService
 from src.application.services.vector_storage_service import VectorStorageService
 from src.domain.entities.intermediate_artifact import IntermediateArtifact, IntermediateType
 from src.shared.errors import AppError
+from src.shared.logging import get_logger
 
 
 _MD_IMAGE_RE = re.compile(r"!\[[^\]]*]\(([^)]+)\)")
@@ -120,18 +121,21 @@ def _parse_json_maybe(raw: str | None) -> dict[str, Any] | None:
     return v if isinstance(v, dict) else None
 
 
-def resolve_latest_bm25_index_storage_path(
+def resolve_all_bm25_index_storage_paths(
     *,
     db: Session,
     collection_name: str,
     workspace_id: str = "default",
     limit: int = 50,
-) -> str | None:
-    """解析最新 kb_chunks 工件中的 bm25 索引路径（相对 data/）。
+) -> list[str]:
+    """解析所有 kb_chunks 工件中的 bm25 索引路径（相对 data/）。
 
     用途：
-    - T095：查询端口使用预建 BM25 索引提升检索稳定性与速度
-    - T096：白皮书生成（RAG）复用同一套索引解析逻辑，避免代码重复
+    - T095：查询端口加载全部预建 BM25 索引
+    - T096：白皮书生成（RAG）复用同一套索引解析逻辑
+
+    Returns:
+        索引路径列表（去重，按时间排序）
     """
     repo = IntermediateArtifactRepository(db)
     items = repo.list(
@@ -142,6 +146,8 @@ def resolve_latest_bm25_index_storage_path(
         offset=0,
     )
     needle = f"intermediates/kb_chunks/{collection_name}/"
+    paths: dict[str, str] = {}  # path -> storage_path 去重
+
     for it in items:
         sp = (it.storage_path or "").replace("\\", "/")
         if needle not in sp:
@@ -151,8 +157,11 @@ def resolve_latest_bm25_index_storage_path(
             continue
         p = meta.get("bm25_index_storage_path")
         if isinstance(p, str) and p.strip():
-            return p.strip().replace("\\", "/")
-    return None
+            normalized = p.strip().replace("\\", "/")
+            paths[normalized] = sp
+
+    # 返回去重后的路径列表（保持插入顺序）
+    return list(dict.fromkeys(paths.keys()))
 
 
 def resolve_latest_kb_input_root(
@@ -167,6 +176,23 @@ def resolve_latest_kb_input_root(
     用途：
     - T096：白皮书生成需要从 doc_rel_path 反查到 chart_json/images 等真实文件
     """
+    def _is_success_status(v: object) -> bool:
+        """兼容不同版本的 build 状态字段（以事实为准，保持向后兼容）。"""
+        s = str(v or "").strip().lower()
+        return s in {"completed", "succeeded", "success", "ok", "done"}
+
+    def _resolve_existing_dir(raw: str) -> Path | None:
+        """将 input_root 解析为存在的目录（兼容绝对/相对 data/）。"""
+        if not raw:
+            return None
+        cand = Path(str(raw).strip())
+        if cand.exists() and cand.is_dir():
+            return cand
+        cand2 = Path("data") / str(raw).strip()
+        if cand2.exists() and cand2.is_dir():
+            return cand2
+        return None
+
     repo = IntermediateArtifactRepository(db)
     items = repo.list(
         workspace_id=workspace_id,
@@ -183,9 +209,30 @@ def resolve_latest_kb_input_root(
         meta = _parse_json_maybe(it.extra_metadata)
         if not meta:
             continue
+        # 只接受“成功完成”的建库工件，避免拿到 running/failed 的不完整元数据
+        if not _is_success_status(meta.get("status")) and not _is_success_status(meta.get("stage")):
+            continue
+
         ir = meta.get("input_root")
-        if isinstance(ir, str) and ir.strip():
-            return ir.strip()
+        if not isinstance(ir, str) or not ir.strip():
+            continue
+
+        root_dir = _resolve_existing_dir(ir.strip())
+        if root_dir is None:
+            continue
+
+        # 必须具备 chart_json 产物，才能支持 T096 图表反查
+        chart_dir = root_dir / "chart_json"
+        if not chart_dir.exists() or not chart_dir.is_dir():
+            continue
+        try:
+            if not any(chart_dir.glob("*.json")):
+                continue
+        except Exception:
+            continue
+
+        # 保持与历史行为一致：返回 meta 中记录的 raw 字符串
+        return ir.strip()
     return None
 
 
@@ -276,6 +323,55 @@ def _uuid_parts_from_relpath(rel_path: Path) -> list[str]:
     return parts
 
 
+def _validate_and_extract_source_id(root: Path) -> tuple[str, str]:
+    """验证输入根目录结构并提取 source_file_id。
+    
+    Args:
+        root: 输入根目录路径
+        
+    Returns:
+        (root_kind, source_file_id)
+        
+    Raises:
+        AppError: 如果路径结构不符合预期
+    """
+    root_abs = root.resolve()
+    
+    # 检查是否是 intermediates/{id}/pic_to_json 结构
+    if root_abs.name.lower() == "pic_to_json":
+        parent = root_abs.parent
+        
+        # 验证 parent 是有效的 UUID
+        if not parent.name or not _UUID_RE.match(parent.name):
+            raise AppError(
+                code="kb_invalid_path_structure",
+                message=(
+                    f"pic_to_json 的父目录应为有效的 UUID (source_file_id): {parent}\n"
+                    f"期望路径格式: data/intermediates/{{source_file_id}}/pic_to_json/\n"
+                    f"实际路径: {root_abs}"
+                ),
+                status_code=400,
+            )
+        
+        # 验证再上一级是 intermediates
+        grandparent = parent.parent
+        if grandparent.name.lower() != "intermediates":
+            raise AppError(
+                code="kb_invalid_path_structure",
+                message=(
+                    f"路径结构不符合预期: {root_abs}\n"
+                    f"期望路径格式: data/intermediates/{{source_file_id}}/pic_to_json/\n"
+                    f"实际路径: {root_abs}"
+                ),
+                status_code=400,
+            )
+        
+        return "pic_to_json", parent.name
+    
+    # 其他路径结构的处理（向后兼容）
+    return "other", "unknown"
+
+
 def _summarize_chart_json(obj: dict[str, Any]) -> str:
     # 目标：可检索、短、稳定（避免把整段 JSON 塞进 KB）
     chart_name = obj.get("_chart_name") or obj.get("chart_name") or "图表"
@@ -338,9 +434,11 @@ def _inject_chart_snippets(*, md_text: str, doc_dir: Path) -> tuple[str, int]:
         snippet = _summarize_chart_json(obj)
         if not snippet:
             continue
-        out_lines.append("")  # 空行隔开，避免破坏 Markdown
+        # 注意：这里**不要**插入空行（\n\n）。
+        # chunking_service 的结构切分会按“双换行”拆段；
+        # 若插入空行，图像引用与 [图表] 摘要更容易被切到不同 chunk，
+        # 导致“召回段落无法准确定位对应图表”。
         out_lines.append(snippet)
-        out_lines.append("")
         injected += 1
 
     return "\n".join(out_lines), injected
@@ -383,6 +481,7 @@ class KnowledgeBaseService:
         options: KnowledgeBaseBuildOptions,
         workspace_id: str = "default",
     ) -> dict[str, Any]:
+        log = get_logger(__name__)
         # 运行期可用：resolve 仅用于文件遍历/存在性校验；对外回写保持相对路径
         root = options.input_root
         root_abs = options.input_root.resolve()
@@ -400,6 +499,8 @@ class KnowledgeBaseService:
         artifact_id: str | None = None
         artifact_storage_path: str | None = None
         artifact_out_path: Path | None = None
+        last_log_stage: str | None = None
+        last_log_pct: int | None = None
 
         def _progress_update(payload: dict[str, Any]) -> None:
             nonlocal artifact_id, artifact_storage_path, artifact_out_path
@@ -458,48 +559,105 @@ class KnowledgeBaseService:
             # 同步落盘（供回放/审计）
             _write_json(artifact_out_path, payload)
 
-        md_files = sorted(root_abs.rglob("full.md"))
+            nonlocal last_log_stage, last_log_pct
+            stage = payload.get("stage")
+            status = payload.get("status")
+            pct = payload.get("progress_percent")
+            should_log = False
+            if isinstance(stage, str) and stage != last_log_stage:
+                should_log = True
+            if isinstance(pct, int) and pct != last_log_pct:
+                should_log = True
+            if status in {"failed", "succeeded"}:
+                should_log = True
+            if should_log:
+                last_log_stage = stage if isinstance(stage, str) else last_log_stage
+                last_log_pct = pct if isinstance(pct, int) else last_log_pct
+                log.info(
+                    "t095.kb_build.progress",
+                    extra={
+                        "build_id": payload.get("build_id"),
+                        "collection_name": payload.get("collection_name"),
+                        "status": status,
+                        "stage": stage,
+                        "progress_percent": pct,
+                        "docs_total": payload.get("docs_total"),
+                        "docs_indexed": payload.get("docs_indexed"),
+                        "chunks_indexed": payload.get("chunks_indexed"),
+                        "chart_snippets_injected": payload.get("chart_snippets_injected"),
+                        "bm25_index_storage_path": payload.get("bm25_index_storage_path"),
+                        "artifact_storage_path": payload.get("artifact_storage_path"),
+                    },
+                )
+
+        # 验证路径结构并提取 source_file_id
+        root_kind, source_file_id_from_path = _validate_and_extract_source_id(root)
+        
+        if root_kind == "pic_to_json":
+            # 新规范：pic_to_json 目录下应且仅应包含 1 个 Markdown 主文档（文件名不做约束）
+            md_files = sorted([p for p in root_abs.glob("*.md") if p.is_file()])
+            if len(md_files) != 1:
+                raise AppError(
+                    code="kb_invalid_input",
+                    message=(
+                        f"pic_to_json 目录下应且仅应包含 1 个 md 文件\n"
+                        f"输入路径: {root}\n"
+                        f"期望路径格式: data/intermediates/{{source_file_id}}/pic_to_json/\n"
+                        f"实际找到: {len(md_files)} 个 md 文件\n"
+                        f"文件列表: {[p.name for p in md_files]}"
+                    ),
+                    status_code=400,
+                )
+        else:
+            # 新规范：只从 pic_to_json 目录下的“唯一主 md”建库（cleaned_doc 等路径已废弃）
+            md_files = []
+            ambiguous: list[dict[str, Any]] = []
+            try:
+                pic_dirs = [p for p in root_abs.rglob("pic_to_json") if p.is_dir()]
+            except Exception:
+                pic_dirs = []
+            for d in sorted(pic_dirs, key=lambda x: x.as_posix()):
+                items = sorted([p for p in d.glob("*.md") if p.is_file()], key=lambda x: x.name)
+                if not items:
+                    continue
+                if len(items) == 1:
+                    md_files.append(items[0])
+                else:
+                    ambiguous.append({"dir": d.as_posix(), "md_files": [p.name for p in items]})
+            if ambiguous:
+                raise AppError(
+                    code="kb_ambiguous_markdown",
+                    message=(
+                        "检测到多个 pic_to_json 目录包含多个 .md 文件，无法确定主文档。\n"
+                        "新规范要求：每个 pic_to_json 目录下必须且只允许 1 个 .md 主文档。"
+                    ),
+                    status_code=400,
+                    details={"ambiguous": ambiguous[:20], "ambiguous_count": len(ambiguous)},
+                )
         if options.max_docs and options.max_docs > 0:
             md_files = md_files[: int(options.max_docs)]
         if not md_files:
             raise AppError(
                 code="kb_no_documents",
-                message=f"未找到 full.md（请先完成 T097/T094 产出）: {root}",
+                message=(
+                    f"未找到可用的主 Markdown 文档（仅支持新路径：.../pic_to_json/*.md 且每目录唯一）: {root}\n"
+                    "请先完成 T094 图转 JSON（确保 data/intermediates/.../pic_to_json 下存在 1 个 .md 主文档）。"
+                ),
                 status_code=400,
             )
 
         docs_total = len(md_files)
-        _progress_update(
-            {
-                "task": "T095",
-                "build_id": build_id,
-                "collection_name": options.collection_name,
-                "input_root": root.as_posix(),
-                "artifact_storage_path": options.artifact_storage_path,
-                "status": "running",
-                "stage": "scanning_documents",
-                "progress_percent": 1,
-                "docs_total": docs_total,
-                "docs_indexed": 0,
-                "chunks_indexed": 0,
-                "chart_snippets_injected": 0,
-                "started_at": started_at,
-                "updated_at": datetime.now().isoformat(),
-            }
-        )
-
-        # 如果需要重建，先删除 collection
-        if options.recreate:
+        try:
             _progress_update(
                 {
                     "task": "T095",
                     "build_id": build_id,
                     "collection_name": options.collection_name,
                     "input_root": root.as_posix(),
-                    "artifact_storage_path": artifact_storage_path,
+                    "artifact_storage_path": options.artifact_storage_path,
                     "status": "running",
-                    "stage": "recreating_collection",
-                    "progress_percent": 5,
+                    "stage": "scanning_documents",
+                    "progress_percent": 1,
                     "docs_total": docs_total,
                     "docs_indexed": 0,
                     "chunks_indexed": 0,
@@ -508,77 +666,8 @@ class KnowledgeBaseService:
                     "updated_at": datetime.now().isoformat(),
                 }
             )
-            await self.vector_service.delete_collection(options.collection_name)
 
-        total_chunks = 0
-        total_docs = 0
-        total_chart_injected = 0
-        source_ids: set[str] = set()
-        all_chunks: list[KBChunk] = []
-        bm25_index_storage_path: str | None = None
-
-        for i, md_path in enumerate(md_files, start=1):
-            doc_dir = md_path.parent
-            rel = md_path.relative_to(root_abs)
-            md_text = _safe_read_text(md_path)
-            doc_title = _pick_doc_title(doc_dir, md_text)
-
-            uuid_parts = _uuid_parts_from_relpath(rel)
-            source_file_id = uuid_parts[0] if len(uuid_parts) >= 1 else "unknown"
-            doc_id = uuid_parts[1] if len(uuid_parts) >= 2 else doc_dir.name
-            source_ids.add(source_file_id)
-
-            original_filename = None
-            if self.source_file_repository is not None and _UUID_RE.match(source_file_id):
-                sf = self.source_file_repository.get_by_id(source_file_id)
-                if sf is not None:
-                    original_filename = sf.original_filename
-            # 若 doc_title 退化为 UUID/泛化词，则用原始文件名兜底，避免引用显示 UUID
-            if original_filename:
-                dt = str(doc_title or "").strip()
-                stem = Path(original_filename).stem
-                if (
-                    not dt
-                    or _UUID_RE.match(dt)
-                    or re.fullmatch(r"\d{4}", dt)
-                    or re.fullmatch(r"\d+", dt)
-                    or dt in {"证券研究报告", "研究报告", "年度报告", "报告"}
-                    or len(dt) < 4
-                ):
-                    doc_title = stem or doc_title
-
-            augmented, injected = _inject_chart_snippets(md_text=md_text, doc_dir=doc_dir)
-            total_chart_injected += injected
-
-            base_meta: dict[str, Any] = {
-                "source_file_id": source_file_id,
-                "doc_id": doc_id,
-                "doc_title": doc_title,
-                "doc_rel_path": str(doc_dir.relative_to(root_abs)).replace("\\", "/"),
-                "original_filename": original_filename,
-            }
-
-            chunks: list[KBChunk] = await self.chunking_service.chunk_document(
-                text=augmented,
-                metadata=base_meta,
-                options=options.chunking
-                or ChunkingOptions(strategy=ChunkingStrategy.STRUCTURE_AWARE),
-            )
-
-            # 入库（向量 + 元数据）
-            upserted = await self.vector_service.upsert_vectors(
-                chunks=chunks,
-                collection_name=options.collection_name,
-            )
-
-            total_docs += 1
-            total_chunks += len(chunks)
-            all_chunks.extend(chunks)
-            # upserted == len(chunks) 理论上成立，但保持统计独立
-
-            if options.progress_update_every_n_docs <= 1 or (i % options.progress_update_every_n_docs) == 0:
-                # 20%~95% 随文档推进
-                pct = 20 + int(75 * (total_docs / max(docs_total, 1)))
+            if options.recreate:
                 _progress_update(
                     {
                         "task": "T095",
@@ -587,113 +676,248 @@ class KnowledgeBaseService:
                         "input_root": root.as_posix(),
                         "artifact_storage_path": artifact_storage_path,
                         "status": "running",
-                        "stage": "processing_documents",
-                        "progress_percent": min(pct, 95),
+                        "stage": "recreating_collection",
+                        "progress_percent": 5,
                         "docs_total": docs_total,
-                        "docs_indexed": total_docs,
-                        "chunks_indexed": total_chunks,
-                        "chart_snippets_injected": total_chart_injected,
-                        "bm25_index_storage_path": bm25_index_storage_path,
+                        "docs_indexed": 0,
+                        "chunks_indexed": 0,
+                        "chart_snippets_injected": 0,
                         "started_at": started_at,
                         "updated_at": datetime.now().isoformat(),
                     }
                 )
+                await self.vector_service.delete_collection(options.collection_name)
 
-        # 预建 BM25 索引：写入与 kb_chunks 同目录的 *.bm25.json
-        if all_chunks:
+            total_chunks = 0
+            total_docs = 0
+            total_chart_injected = 0
+            source_ids: set[str] = set()
+            all_chunks: list[KBChunk] = []
+            bm25_index_storage_path: str | None = None
+
+            for i, md_path in enumerate(md_files, start=1):
+                doc_dir = md_path.parent
+                rel = md_path.relative_to(root_abs)
+                md_text = _safe_read_text(md_path)
+                doc_title = _pick_doc_title(doc_dir, md_text)
+
+                if root_kind == "pic_to_json":
+                    # 使用已验证的 source_file_id
+                    source_file_id = source_file_id_from_path
+                    doc_id = md_path.stem
+                else:
+                    uuid_parts = _uuid_parts_from_relpath(rel)
+                    source_file_id = uuid_parts[0] if len(uuid_parts) >= 1 else "unknown"
+                    if len(uuid_parts) >= 2:
+                        doc_id = uuid_parts[1]
+                    elif doc_dir.name.lower() == "pic_to_json" and len(uuid_parts) >= 1:
+                        # 典型新结构：intermediates/{source_file_id}/pic_to_json/<main>.md
+                        # 此时 doc_dir.name 固定为 pic_to_json；用 source_file_id 作为 doc_id 以保证稳定/唯一
+                        doc_id = uuid_parts[0]
+                    else:
+                        doc_id = doc_dir.name
+                source_ids.add(source_file_id)
+
+                original_filename = None
+                if self.source_file_repository is not None and _UUID_RE.match(source_file_id):
+                    sf = self.source_file_repository.get_by_id(source_file_id)
+                    if sf is not None:
+                        original_filename = sf.original_filename
+                if original_filename:
+                    dt = str(doc_title or "").strip()
+                    stem = Path(original_filename).stem
+                    if (
+                        not dt
+                        or _UUID_RE.match(dt)
+                        or re.fullmatch(r"\d{4}", dt)
+                        or re.fullmatch(r"\d+", dt)
+                        or dt in {"证券研究报告", "研究报告", "年度报告", "报告"}
+                        or len(dt) < 4
+                    ):
+                        doc_title = stem or doc_title
+
+                augmented, injected = _inject_chart_snippets(md_text=md_text, doc_dir=doc_dir)
+                total_chart_injected += injected
+
+                base_meta: dict[str, Any] = {
+                    "source_file_id": source_file_id,
+                    "doc_id": doc_id,
+                    "doc_title": doc_title,
+                    "doc_rel_path": str(rel).replace("\\", "/"),
+                    "original_filename": original_filename,
+                }
+
+                chunks: list[KBChunk] = await self.chunking_service.chunk_document(
+                    text=augmented,
+                    metadata=base_meta,
+                    options=options.chunking
+                    or ChunkingOptions(strategy=ChunkingStrategy.STRUCTURE_AWARE),
+                )
+
+                await self.vector_service.upsert_vectors(
+                    chunks=chunks,
+                    collection_name=options.collection_name,
+                )
+
+                total_docs += 1
+                total_chunks += len(chunks)
+                all_chunks.extend(chunks)
+
+                if options.progress_update_every_n_docs <= 1 or (i % options.progress_update_every_n_docs) == 0:
+                    pct = 20 + int(75 * (total_docs / max(docs_total, 1)))
+                    _progress_update(
+                        {
+                            "task": "T095",
+                            "build_id": build_id,
+                            "collection_name": options.collection_name,
+                            "input_root": root.as_posix(),
+                            "artifact_storage_path": artifact_storage_path,
+                            "status": "running",
+                            "stage": "processing_documents",
+                            "progress_percent": min(pct, 95),
+                            "docs_total": docs_total,
+                            "docs_indexed": total_docs,
+                            "chunks_indexed": total_chunks,
+                            "chart_snippets_injected": total_chart_injected,
+                            "bm25_index_storage_path": bm25_index_storage_path,
+                            "started_at": started_at,
+                            "updated_at": datetime.now().isoformat(),
+                        }
+                    )
+
+            if all_chunks:
+                try:
+                    from src.application.services.bm25_index_service import BM25Index
+
+                    _progress_update(
+                        {
+                            "task": "T095",
+                            "build_id": build_id,
+                            "collection_name": options.collection_name,
+                            "input_root": root.as_posix(),
+                            "status": "running",
+                            "stage": "building_bm25",
+                            "progress_percent": 97,
+                            "docs_total": docs_total,
+                            "docs_indexed": total_docs,
+                            "chunks_indexed": total_chunks,
+                            "chart_snippets_injected": total_chart_injected,
+                            "bm25_index_storage_path": bm25_index_storage_path,
+                            "started_at": started_at,
+                            "updated_at": datetime.now().isoformat(),
+                        }
+                    )
+
+                    if artifact_storage_path and artifact_storage_path.endswith(".json"):
+                        bm25_index_storage_path = artifact_storage_path[:-5] + ".bm25.json"
+                    else:
+                        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        bm25_index_storage_path = (
+                            f"intermediates/kb_chunks/{options.collection_name}/{ts}_{build_id}.bm25.json"
+                        )
+
+                    idx = BM25Index.build_from_chunks(all_chunks)
+                    idx.save(Path("data") / bm25_index_storage_path)
+                except Exception as exc:
+                    bm25_index_storage_path = None
+                    log.warning(
+                        "t095.kb_build.bm25_failed",
+                        extra={
+                            "build_id": build_id,
+                            "collection_name": options.collection_name,
+                            "error_type": exc.__class__.__name__,
+                            "error_message": str(exc),
+                        },
+                    )
+
+            _progress_update(
+                {
+                    "task": "T095",
+                    "build_id": build_id,
+                    "collection_name": options.collection_name,
+                    "input_root": root.as_posix(),
+                    "artifact_storage_path": artifact_storage_path,
+                    "bm25_index_storage_path": bm25_index_storage_path,
+                    "status": "running",
+                    "stage": "finalizing",
+                    "progress_percent": 98,
+                    "docs_total": docs_total,
+                    "docs_indexed": total_docs,
+                    "chunks_indexed": total_chunks,
+                    "chart_snippets_injected": total_chart_injected,
+                    "started_at": started_at,
+                    "updated_at": datetime.now().isoformat(),
+                }
+            )
+
+            info = await self.vector_service.get_collection_info(options.collection_name)
+            result = {
+                "success": True,
+                "collection_name": options.collection_name,
+                "docs_indexed": total_docs,
+                "chunks_indexed": total_chunks,
+                "chart_snippets_injected": total_chart_injected,
+                "artifact_id": artifact_id,
+                "artifact_storage_path": artifact_storage_path,
+                "bm25_index_storage_path": bm25_index_storage_path,
+                "collection_info": info.model_dump() if info else None,
+            }
+
+            _progress_update(
+                {
+                    "task": "T095",
+                    "build_id": build_id,
+                    "collection_name": options.collection_name,
+                    "input_root": root.as_posix(),
+                    "artifact_storage_path": artifact_storage_path,
+                    "status": "succeeded",
+                    "stage": "succeeded",
+                    "progress_percent": 100,
+                    "docs_total": docs_total,
+                    "docs_indexed": total_docs,
+                    "chunks_indexed": total_chunks,
+                    "chart_snippets_injected": total_chart_injected,
+                    "bm25_index_storage_path": bm25_index_storage_path,
+                    "source_file_ids": sorted(source_ids),
+                    "started_at": started_at,
+                    "updated_at": datetime.now().isoformat(),
+                    "result": result,
+                }
+            )
+            return result
+        except Exception as exc:
             try:
-                from src.application.services.bm25_index_service import BM25Index
-
                 _progress_update(
                     {
                         "task": "T095",
                         "build_id": build_id,
                         "collection_name": options.collection_name,
                         "input_root": root.as_posix(),
-                        "status": "running",
-                        "stage": "building_bm25",
-                        "progress_percent": 97,
+                        "artifact_storage_path": artifact_storage_path,
+                        "status": "failed",
+                        "stage": "failed",
+                        "progress_percent": last_log_pct,
                         "docs_total": docs_total,
-                        "docs_indexed": total_docs,
-                        "chunks_indexed": total_chunks,
-                        "chart_snippets_injected": total_chart_injected,
-                        "bm25_index_storage_path": bm25_index_storage_path,
+                        "docs_indexed": None,
+                        "chunks_indexed": None,
+                        "chart_snippets_injected": None,
                         "started_at": started_at,
                         "updated_at": datetime.now().isoformat(),
+                        "error": {"type": exc.__class__.__name__, "message": str(exc)},
                     }
                 )
-
-                # 优先与 kb_chunks 报告同名同目录，便于清理与追踪
-                if artifact_storage_path and artifact_storage_path.endswith(".json"):
-                    bm25_index_storage_path = artifact_storage_path[:-5] + ".bm25.json"
-                else:
-                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    bm25_index_storage_path = (
-                        f"intermediates/kb_chunks/{options.collection_name}/{ts}_{build_id}.bm25.json"
-                    )
-
-                idx = BM25Index.build_from_chunks(all_chunks)
-                idx.save(Path("data") / bm25_index_storage_path)
-            except Exception as exc:
-                # BM25 预建失败不应阻塞向量库建库（允许降级）
-                bm25_index_storage_path = None
-
-        _progress_update(
-            {
-                "task": "T095",
-                "build_id": build_id,
-                "collection_name": options.collection_name,
-                "input_root": root.as_posix(),
-                "artifact_storage_path": artifact_storage_path,
-                "bm25_index_storage_path": bm25_index_storage_path,
-                "status": "running",
-                "stage": "finalizing",
-                "progress_percent": 98,
-                "docs_total": docs_total,
-                "docs_indexed": total_docs,
-                "chunks_indexed": total_chunks,
-                "chart_snippets_injected": total_chart_injected,
-                "started_at": started_at,
-                "updated_at": datetime.now().isoformat(),
-            }
-        )
-
-        info = await self.vector_service.get_collection_info(options.collection_name)
-        result = {
-            "success": True,
-            "collection_name": options.collection_name,
-            "docs_indexed": total_docs,
-            "chunks_indexed": total_chunks,
-            "chart_snippets_injected": total_chart_injected,
-            "artifact_id": artifact_id,
-            "artifact_storage_path": artifact_storage_path,
-            "bm25_index_storage_path": bm25_index_storage_path,
-            "collection_info": info.model_dump() if info else None,
-        }
-
-        # 写入最终报告（文件可包含更完整的信息）
-        _progress_update(
-            {
-                "task": "T095",
-                "build_id": build_id,
-                "collection_name": options.collection_name,
-                "input_root": root.as_posix(),
-                "artifact_storage_path": artifact_storage_path,
-                "status": "succeeded",
-                "stage": "succeeded",
-                "progress_percent": 100,
-                "docs_total": docs_total,
-                "docs_indexed": total_docs,
-                "chunks_indexed": total_chunks,
-                "chart_snippets_injected": total_chart_injected,
-                "bm25_index_storage_path": bm25_index_storage_path,
-                "source_file_ids": sorted(source_ids),
-                "started_at": started_at,
-                "updated_at": datetime.now().isoformat(),
-                "result": result,
-            }
-        )
-        return result
+            except Exception:
+                pass
+            log.exception(
+                "t095.kb_build.failed",
+                extra={
+                    "build_id": build_id,
+                    "collection_name": options.collection_name,
+                    "input_root": root.as_posix(),
+                    "artifact_storage_path": artifact_storage_path,
+                },
+            )
+            raise
 
     async def query_hybrid_rerank(
         self,

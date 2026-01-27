@@ -260,7 +260,12 @@ class ChartRendererService:
             "xAxis": {
                 "type": "category",
                 "name": config.x_axis_title,
-                "data": [dp.x for dp in config.series[0].data]
+                # 兜底：有些 chart_json 可能缺失 categories，但数据点里有 name
+                "data": [
+                    (dp.x if dp.x is not None else (dp.name or ""))
+                    for dp in config.series[0].data
+                    if (dp.x is not None) or (dp.name is not None)
+                ]
                 if config.series and config.series[0].data
                 else [],
                 "axisLabel": {"rotate": 45}
@@ -344,7 +349,21 @@ class ChartRendererService:
         var chartDom = document.getElementById('{chart_id}');
         var myChart = echarts.init(chartDom);
         var option = {config_json};
-        myChart.setOption(option);
+        try {{
+            myChart.setOption(option);
+        }} catch (e) {{
+            console.error("ECharts render failed", e);
+            try {{
+                if (chartDom) {{
+                    var errDiv = document.createElement('div');
+                    errDiv.style.cssText = "padding:12px;border:1px solid #f5c2c7;background:#f8d7da;color:#842029;border-radius:8px;font-size:12px;line-height:1.5;";
+                    var msg = (e && e.message) ? e.message : String(e);
+                    errDiv.textContent = "图表渲染失败：" + msg;
+                    chartDom.innerHTML = "";
+                    chartDom.appendChild(errDiv);
+                }}
+            }} catch (_e2) {{}}
+        }}
     </script>
 </body>
 </html>'''
@@ -444,15 +463,259 @@ class ChartRendererService:
         elif request.library == "chartjs":
             return self.render_chartjs(config, request.output_format)
         elif request.library == "d3":
-            raise ChartRenderError(
-                message="D3.js 渲染器暂未实现，请使用 echarts 或 chartjs",
-                code="not_implemented",
-            )
+            return self.render_d3(config, request.output_format)
         else:
             raise ChartRenderError(
                 message=f"不支持的图表库: {request.library}",
                 code="unsupported_library",
             )
+
+
+    def _build_d3_bar_chart(
+        self,
+        chart_id: str,
+        labels: list[str],
+        values: list[float],
+        colors: list[str],
+        width: int,
+        height: int,
+    ) -> dict[str, str]:
+        """构建 D3.js 柱状图。"""
+        data_json = json.dumps([{"label": l, "value": v} for l, v in zip(labels, values)], ensure_ascii=False)
+        colors_json = json.dumps(colors, ensure_ascii=False)
+        src = self._script_src_for("d3")
+
+        svg = f'''<svg id="{chart_id}" width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">
+    <style>
+        .{chart_id}-bar {{ fill: steelblue; }}
+        .{chart_id}-bar:hover {{ fill: darkblue; }}
+        .{chart_id}-axis {{ font-size: 12px; }}
+        .{chart_id}-title {{ font-size: 16px; font-weight: bold; text-anchor: middle; }}
+    </style>
+</svg>'''
+
+        html = f'''<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <script src="{src}"></script>
+</head>
+<body>
+    <svg id="{chart_id}" width="{width}" height="{height}"></svg>
+    <script>
+        (function() {{
+            const data = {data_json};
+            const colors = {colors_json};
+            const margin = {{top: 40, right: 20, bottom: 60, left: 60}};
+            const chartWidth = {width} - margin.left - margin.right;
+            const chartHeight = {height} - margin.top - margin.bottom;
+
+            const svg = d3.select("#{chart_id}")
+                .attr("width", {width})
+                .attr("height", {height})
+                .append("g")
+                .attr("transform", `translate(${{margin.left}},${{margin.top}})`);
+
+            const x = d3.scaleBand()
+                .domain(data.map(d => d.label))
+                .range([0, chartWidth])
+                .padding(0.2);
+
+            const y = d3.scaleLinear()
+                .domain([0, d3.max(data, d => d.value)])
+                .nice()
+                .range([chartHeight, 0]);
+
+            svg.append("g")
+                .attr("transform", `translate(0,${{chartHeight}})`)
+                .call(d3.axisBottom(x))
+                .selectAll("text")
+                .attr("transform", "rotate(-45)")
+                .style("text-anchor", "end");
+
+            svg.append("g").call(d3.axisLeft(y));
+
+            svg.selectAll(".bar")
+                .data(data)
+                .enter()
+                .append("rect")
+                .attr("class", "bar")
+                .attr("x", d => x(d.label))
+                .attr("y", d => y(d.value))
+                .attr("width", x.bandwidth())
+                .attr("height", d => chartHeight - y(d.value))
+                .attr("fill", (d, i) => colors[i % colors.length]);
+        }})();
+    </script>
+</body>
+</html>'''
+
+        return {"svg": svg, "html": html}
+
+    def _build_d3_line_chart(
+        self,
+        chart_id: str,
+        labels: list[str],
+        values: list[float],
+        colors: list[str],
+        width: int,
+        height: int,
+    ) -> dict[str, str]:
+        """构建 D3.js 折线图。"""
+        data_json = json.dumps([{"label": l, "value": v} for l, v in zip(labels, values)], ensure_ascii=False)
+        colors_json = json.dumps(colors, ensure_ascii=False)
+        src = self._script_src_for("d3")
+
+        svg = f'''<svg id="{chart_id}" width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">
+    <style>
+        .{chart_id}-line {{ fill: none; stroke: steelblue; stroke-width: 2; }}
+        .{chart_id}-dot {{ fill: steelblue; }}
+        .{chart_id}-axis {{ font-size: 12px; }}
+    </style>
+</svg>'''
+
+        html = f'''<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <script src="{src}"></script>
+</head>
+<body>
+    <svg id="{chart_id}" width="{width}" height="{height}"></svg>
+    <script>
+        (function() {{
+            const data = {data_json};
+            const colors = {colors_json};
+            const margin = {{top: 40, right: 20, bottom: 60, left: 60}};
+            const chartWidth = {width} - margin.left - margin.right;
+            const chartHeight = {height} - margin.top - margin.bottom;
+
+            const svg = d3.select("#{chart_id}")
+                .attr("width", {width})
+                .attr("height", {height})
+                .append("g")
+                .attr("transform", `translate(${{margin.left}},${{margin.top}})`);
+
+            const x = d3.scalePoint()
+                .domain(data.map(d => d.label))
+                .range([0, chartWidth]);
+
+            const y = d3.scaleLinear()
+                .domain([0, d3.max(data, d => d.value)])
+                .nice()
+                .range([chartHeight, 0]);
+
+            svg.append("g")
+                .attr("transform", `translate(0,${{chartHeight}})`)
+                .call(d3.axisBottom(x))
+                .selectAll("text")
+                .attr("transform", "rotate(-45)")
+                .style("text-anchor", "end");
+
+            svg.append("g").call(d3.axisLeft(y));
+
+            const line = d3.line()
+                .x(d => x(d.label))
+                .y(d => y(d.value));
+
+            svg.append("path")
+                .datum(data)
+                .attr("class", "line")
+                .attr("d", line)
+                .attr("stroke", colors[0]);
+
+            svg.selectAll(".dot")
+                .data(data)
+                .enter()
+                .append("circle")
+                .attr("class", "dot")
+                .attr("cx", d => x(d.label))
+                .attr("cy", d => y(d.value))
+                .attr("r", 5)
+                .attr("fill", colors[0]);
+        }})();
+    </script>
+</body>
+</html>'''
+
+        return {"svg": svg, "html": html}
+
+    def _build_d3_pie_chart(
+        self,
+        chart_id: str,
+        labels: list[str],
+        values: list[float],
+        colors: list[str],
+        width: int,
+        height: int,
+        chart_type: str,
+    ) -> dict[str, str]:
+        """构建 D3.js 饼图/环形图。"""
+        data_json = json.dumps([{"label": l, "value": v} for l, v in zip(labels, values)], ensure_ascii=False)
+        colors_json = json.dumps(colors, ensure_ascii=False)
+        src = self._script_src_for("d3")
+        inner_radius = 0 if chart_type == "pie" else width * 0.3
+
+        svg = f'''<svg id="{chart_id}" width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">
+    <style>
+        .{chart_id}-arc {{ stroke: white; }}
+        .{chart_id}-label {{ font-size: 12px; text-anchor: middle; }}
+    </style>
+</svg>'''
+
+        html = f'''<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <script src="{src}"></script>
+</head>
+<body>
+    <svg id="{chart_id}" width="{width}" height="{height}"></svg>
+    <script>
+        (function() {{
+            const data = {data_json};
+            const colors = {colors_json};
+            const margin = 20;
+            const radius = Math.min({width}, {height}) / 2 - margin;
+            const innerRadius = {inner_radius};
+
+            const svg = d3.select("#{chart_id}")
+                .attr("width", {width})
+                .attr("height", {height})
+                .append("g")
+                .attr("transform", `translate(${{{width}/2}},${{{height}/2}})`);
+
+            const pie = d3.pie()
+                .value(d => d.value)
+                .sort(null);
+
+            const arc = d3.arc()
+                .innerRadius(innerRadius)
+                .outerRadius(radius);
+
+            const arcs = svg.selectAll(".arc")
+                .data(pie(data))
+                .enter()
+                .append("g")
+                .attr("class", "arc");
+
+            arcs.append("path")
+                .attr("d", arc)
+                .attr("fill", (d, i) => colors[i % colors.length])
+                .attr("stroke", "white")
+                .style("stroke-width", "2px");
+
+            arcs.append("text")
+                .attr("transform", d => `translate(${{arc.centroid(d)}})`)
+                .attr("class", "label")
+                .text(d => d.data.label);
+        }})();
+    </script>
+</body>
+</html>'''
+
+        return {"svg": svg, "html": html}
+
 
     def render_template_snippet(
         self,
@@ -482,7 +745,19 @@ class ChartRendererService:
                     if (chartDom) {{
                         var myChart = echarts.init(chartDom);
                         var option = {json.dumps(raw_opt, ensure_ascii=False)};
-                        myChart.setOption(option);
+                        try {{
+                            myChart.setOption(option);
+                        }} catch (e) {{
+                            console.error("ECharts setOption failed", e);
+                            try {{
+                                var errDiv = document.createElement('div');
+                                errDiv.style.cssText = "padding:12px;border:1px solid #f5c2c7;background:#f8d7da;color:#842029;border-radius:8px;font-size:12px;line-height:1.5;";
+                                var msg = (e && e.message) ? e.message : String(e);
+                                errDiv.textContent = "图表渲染失败：" + msg;
+                                chartDom.innerHTML = "";
+                                chartDom.appendChild(errDiv);
+                            }} catch (_e2) {{}}
+                        }}
                         window.addEventListener('resize', function() {{ myChart.resize(); }});
                     }}
                 }})();
@@ -506,7 +781,19 @@ class ChartRendererService:
                     if (chartDom) {{
                         var myChart = echarts.init(chartDom);
                         var option = {json.dumps(echarts_config, ensure_ascii=False)};
-                        myChart.setOption(option);
+                        try {{
+                            myChart.setOption(option);
+                        }} catch (e) {{
+                            console.error("ECharts setOption failed", e);
+                            try {{
+                                var errDiv = document.createElement('div');
+                                errDiv.style.cssText = "padding:12px;border:1px solid #f5c2c7;background:#f8d7da;color:#842029;border-radius:8px;font-size:12px;line-height:1.5;";
+                                var msg = (e && e.message) ? e.message : String(e);
+                                errDiv.textContent = "图表渲染失败：" + msg;
+                                chartDom.innerHTML = "";
+                                chartDom.appendChild(errDiv);
+                            }} catch (_e2) {{}}
+                        }}
                         window.addEventListener('resize', function() {{ myChart.resize(); }});
                     }}
                 }})();
@@ -571,7 +858,95 @@ class ChartRendererService:
             {
                 "library": "d3",
                 "version": "7.8.5",
-                "supported_types": ["custom"],
-                "features": ["高度可定制", "底层控制", "SVG 渲染", "适合复杂可视化"],
+                "supported_types": ["bar", "line", "pie", "donut", "histogram", "area"],
+                "features": ["高度可定制", "底层控制", "SVG 渲染", "支持 SVG/PNG/HTML 输出"],
             },
         ]
+
+    def render_d3(
+        self,
+        config: ChartConfig,
+        output_format: Literal["svg", "png", "html", "base64"] = "html",
+    ) -> ChartRenderResponse:
+        """使用 D3.js 渲染图表。"""
+        chart_id = self._generate_chart_id(config)
+
+        width = config.width or 800
+        height = config.height or 400
+
+        # 构建 D3.js 可视化配置
+        labels = [dp.x for dp in config.series[0].data] if config.series and config.series[0].data else []
+        values = [dp.y for dp in config.series[0].data] if config.series and config.series[0].data else []
+        colors = config.colors or self._get_default_colors(len(config.series))
+
+        # 根据图表类型生成不同的 D3 代码
+        chart_type = (config.chart_type or "").strip().lower()
+
+        if chart_type in ("bar", "histogram"):
+            d3_code = self._build_d3_bar_chart(chart_id, labels, values, colors, width, height)
+        elif chart_type in ("line", "area"):
+            d3_code = self._build_d3_line_chart(chart_id, labels, values, colors, width, height)
+        elif chart_type in ("pie", "donut"):
+            d3_code = self._build_d3_pie_chart(chart_id, labels, values, colors, width, height, chart_type)
+        else:
+            # 默认使用柱状图
+            d3_code = self._build_d3_bar_chart(chart_id, labels, values, colors, width, height)
+
+        if output_format == "svg":
+            # D3.js 原生支持 SVG 输出
+            svg_content = d3_code["svg"]
+            return ChartRenderResponse(
+                chart_id=chart_id,
+                output_format=output_format,
+                content=svg_content,
+                content_type="image/svg+xml",
+                width=width,
+                height=height,
+            )
+
+        if output_format == "png":
+            # 将 SVG 转换为 PNG
+            svg_content = d3_code["svg"]
+            import base64 as b64
+            from src.shared.errors import ChartRenderError
+
+            try:
+                from cairosvg import svg2png
+                png_bytes = svg2png(bytestring=svg_content.encode("utf-8"), output_width=width, output_height=height)
+                return ChartRenderResponse(
+                    chart_id=chart_id,
+                    output_format=output_format,
+                    content=b64.b64encode(png_bytes).decode(),
+                    content_type="image/png",
+                    width=width,
+                    height=height,
+                )
+            except ImportError:
+                raise ChartRenderError(
+                    message="PNG 格式需要 cairosvg 库，请安装: pip install cairosvg",
+                    code="missing_dependency",
+                )
+
+        if output_format == "base64":
+            html_content = d3_code["html"]
+            import base64 as b64
+
+            return ChartRenderResponse(
+                chart_id=chart_id,
+                output_format=output_format,
+                content=b64.b64encode(html_content.encode()).decode(),
+                content_type="text/html",
+                width=width,
+                height=height,
+            )
+
+        # 返回 HTML
+        html_content = d3_code["html"]
+        return ChartRenderResponse(
+            chart_id=chart_id,
+            output_format=output_format,
+            content=html_content,
+            content_type="text/html",
+            width=width,
+            height=height,
+        )

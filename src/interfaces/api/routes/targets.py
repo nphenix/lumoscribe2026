@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from urllib.parse import quote
 
 from src.application.repositories.target_file_repository import TargetFileRepository
 from src.application.repositories.template_repository import TemplateRepository
@@ -23,7 +25,7 @@ from src.application.services.chart_renderer_service import ChartRendererService
 from src.application.services.content_generation_service import ContentGenerationService
 from src.application.services.hybrid_search_service import HybridSearchService
 from src.application.services.knowledge_base_service import (
-    resolve_latest_bm25_index_storage_path,
+    resolve_all_bm25_index_storage_paths,
     resolve_latest_kb_input_root,
 )
 from src.application.services.llm_runtime_service import LLMRuntimeService
@@ -49,6 +51,23 @@ from src.application.repositories.prompt_repository import PromptRepository
 
 
 router = APIRouter()
+
+_WHITEPAPER_GEN_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _get_whitepaper_gen_lock(workspace_id: str) -> asyncio.Lock:
+    """同一 workspace 内避免重复并发生成（开发/单进程部署兜底）。
+
+    说明：
+    - 这是进程内锁：多进程/多实例部署时仍建议在上层做幂等键或分布式锁；
+    - 目标：不依赖前端行为，避免误触发导致同一时间启动两次 LLM 生成。
+    """
+    key = (workspace_id or "default").strip() or "default"
+    lk = _WHITEPAPER_GEN_LOCKS.get(key)
+    if lk is None:
+        lk = asyncio.Lock()
+        _WHITEPAPER_GEN_LOCKS[key] = lk
+    return lk
 
 
 def get_target_file_service(db: Session = Depends(get_db)) -> TargetFileService:
@@ -77,6 +96,34 @@ def _safe_filename(name: str) -> str:
         out.append("_" if ch in bad else ch)
     # 去掉尾部空格/点（Windows 不允许）
     return "".join(out).strip().strip(".") or "whitepaper"
+
+
+def _build_content_disposition(*, disposition: str, filename: str) -> str:
+    """构造兼容中文文件名的 Content-Disposition（避免 Starlette latin-1 编码崩溃）。
+
+    说明：
+    - HTTP header 值必须是 latin-1 可编码字符串；中文会触发 UnicodeEncodeError。
+    - 采用 RFC 5987 `filename*`（UTF-8 百分号编码，纯 ASCII），同时提供 ASCII 的 `filename` 作为兼容回退。
+    """
+    dispo = (disposition or "").strip().lower() or "inline"
+    if dispo not in {"inline", "attachment"}:
+        dispo = "inline"
+
+    # 去掉路径组件与控制字符，避免 header 注入风险
+    raw_name = Path(str(filename or "")).name
+    raw_name = raw_name.replace("\r", "").replace("\n", "").strip()
+    safe_name = _safe_filename(raw_name) or "whitepaper.html"
+
+    # ASCII fallback：确保可被 latin-1 编码（ASCII 是 latin-1 子集）
+    ascii_fallback = (
+        safe_name.encode("ascii", "ignore").decode("ascii").strip() or "whitepaper.html"
+    )
+    # 进一步移除可能影响 header 解析的字符
+    ascii_fallback = ascii_fallback.replace('"', "_").replace(";", "_")
+
+    encoded = quote(safe_name, safe="")
+    # 注：filename* 不加引号，且必须为 ASCII（percent-encoding）
+    return f"{dispo}; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded}"
 
 
 def _extract_md_title(md: str) -> str | None:
@@ -108,6 +155,30 @@ def _read_text_best_effort(path: Path) -> str:
             continue
     # 最后兜底：不抛错，避免接口直接 500
     return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _extract_auto_charts_selected(coverage_items: object) -> list[dict]:
+    """从 section.coverage 中提取被自动选中的图表与原因（便于人工审计）。"""
+    if not isinstance(coverage_items, list):
+        return []
+    out: list[dict] = []
+    for it in coverage_items:
+        if not isinstance(it, dict):
+            continue
+        if it.get("type") != "auto_chart":
+            continue
+        out.append(
+            {
+                "chart_name": it.get("chart_name"),
+                "chart_type": it.get("chart_type"),
+                "doc_rel_path": it.get("doc_rel_path"),
+                "doc_chart_json_path": it.get("doc_chart_json_path"),
+                "reason": it.get("reason"),
+                "cycle_detected": it.get("cycle_detected"),
+                "original_chart_type": it.get("original_chart_type"),
+            }
+        )
+    return out
 
 
 class WhitepaperDraftItem(BaseModel):
@@ -250,6 +321,44 @@ async def _resolve_collection_name(req: WhitepaperGenerateRequest, db: Session) 
     if name:
         return name
 
+    def _has_successful_kb_chunks(collection_name: str) -> bool:
+        """校验指定 collection 是否有“成功完成”的 KB_CHUNKS 工件。
+
+        说明：
+        - 过去版本曾出现“目标文件里记录了 kb_id，但该 collection 并未真正建库”的脏数据。
+        - 若直接信任 target_files.kb_id，会导致生成阶段检索为空（RAG 失效），图表反查也无法工作。
+        - 因此这里先做一次 DB 事实校验：没有成功建库工件就不采用。
+        """
+        cn = (collection_name or "").strip()
+        if not cn:
+            return False
+        try:
+            repo = IntermediateArtifactRepository(db)
+            items = repo.list(
+                workspace_id=req.workspace_id,
+                artifact_type=IntermediateType.KB_CHUNKS,
+                source_id=None,
+                limit=50,
+                offset=0,
+            )
+            for it in items:
+                meta_raw = (it.extra_metadata or "").strip()
+                if not meta_raw:
+                    continue
+                try:
+                    meta = json.loads(meta_raw)
+                except Exception:
+                    continue
+                if not isinstance(meta, dict):
+                    continue
+                if str(meta.get("collection_name") or "").strip() != cn:
+                    continue
+                if _is_success_status(meta.get("status")) or _is_success_status(meta.get("stage")):
+                    return True
+        except Exception:
+            return False
+        return False
+
     # 2) 最近一次生成使用的 kb_id（DB 事实）
     try:
         latest = (
@@ -263,7 +372,7 @@ async def _resolve_collection_name(req: WhitepaperGenerateRequest, db: Session) 
         )
         if latest is not None:
             kb_id = (latest.kb_id or "").strip()
-            if kb_id:
+            if kb_id and _has_successful_kb_chunks(kb_id):
                 return kb_id
     except Exception:
         pass
@@ -378,148 +487,177 @@ async def generate_whitepaper(
     collection_name = await _resolve_collection_name(req, db)
     filename, outline_text = _resolve_outline(req)
 
-    # 2) 确保 drafts 大纲已注册为 Template（只写 DB，不复制文件）
-    storage_rel = f"Templates/drafts/{filename}".replace("\\", "/")
-    template = (
-        db.query(Template)
-        .filter(Template.workspace_id == req.workspace_id, Template.storage_path == storage_rel)
-        .first()
-    )
-    if template is None:
+    # 避免同一 workspace 并发启动两个生成（前端重复触发/重试也不会导致双跑）
+    lock = _get_whitepaper_gen_lock(req.workspace_id)
+    if lock.locked():
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "该工作空间已有白皮书生成任务在运行，请等待完成后再重试",
+                "workspace_id": req.workspace_id,
+            },
+        )
+    async with lock:
+        # 2) 确保 drafts 大纲已注册为 Template（只写 DB，不复制文件）
+        storage_rel = f"Templates/drafts/{filename}".replace("\\", "/")
+        template = (
+            db.query(Template)
+            .filter(Template.workspace_id == req.workspace_id, Template.storage_path == storage_rel)
+            .first()
+        )
+        if template is None:
+            from uuid import uuid4
+
+            template = Template(
+                id=str(uuid4()),
+                workspace_id=req.workspace_id,
+                original_filename=filename,
+                file_format="md",
+                type=TemplateType.CUSTOM,
+                version=1,
+                locked=True,
+                storage_path=storage_rel,
+                description="whitepaper outline draft (data/Templates/drafts)",
+            )
+            db.add(template)
+            db.commit()
+            db.refresh(template)
+
+        # 3) 组装服务依赖（真实 LLM + 真实 KB）
+        llm_runtime = _make_llm_runtime(db)
+        embedder = llm_runtime.get_model_for_callsite("vector_storage:embed_text")
+        reranker = llm_runtime.get_model_for_callsite("hybrid_search:rerank")
+
+        vector_service = VectorStorageService(embedding_model=embedder)
+        bm25_paths = resolve_all_bm25_index_storage_paths(
+            db=db,
+            collection_name=collection_name,
+            workspace_id=req.workspace_id,
+        )
+        hybrid_service = HybridSearchService(
+            vector_service=vector_service,
+            collection_name=collection_name,
+            reranker=reranker,
+            bm25_index_storage_paths=bm25_paths,
+        )
+
+        template_repo = TemplateRepository(db)
+        template_service = TemplateService(template_repo)
+        chart_renderer = ChartRendererService()
+        content_service = ContentGenerationService(
+            template_service=template_service,
+            hybrid_search_service=hybrid_service,
+            llm_runtime_service=llm_runtime,
+            chart_renderer_service=chart_renderer,
+            template_repository=template_repo,
+        )
+
+        # 4) 可选：先润色大纲（保持格式/层级）
+        polished_outline = outline_text
+        if polish_outline:
+            polished_outline = content_service.polish_outline(outline_text)
+
+        document_title = _extract_md_title(polished_outline) or _extract_md_title(outline_text) or filename
+
+        # 5) 检索参数（hybrid + rerank）
+        search_options = HybridSearchOptions(
+            top_k=top_k,
+            use_rerank=True,
+            rerank_top_n=rerank_top_n,
+        )
+
+        # 5) 生成内容（按章/子章召回，覆盖不足由 LLM 补全）
+        kb_input_root_raw = resolve_latest_kb_input_root(
+            db=db,
+            collection_name=collection_name,
+            workspace_id=req.workspace_id,
+        )
+        kb_input_root: Path | None = None
+        if kb_input_root_raw:
+            cand = Path(kb_input_root_raw)
+            if not cand.exists():
+                # 兼容：DB 中可能存的是相对 data/ 的路径（例如 intermediates/...）
+                cand2 = Path("data") / kb_input_root_raw
+                if cand2.exists():
+                    cand = cand2
+            kb_input_root = cand if cand.exists() else None
+        result = await content_service.generate_content(
+            template_id=template.id,
+            collection_name=collection_name,
+            chart_configs=None,
+            search_options=search_options,
+            template_content_override=polished_outline,
+            document_title=document_title,
+            coverage_score_threshold=req.score_threshold,
+            kb_input_root=kb_input_root,
+        )
+
+        # 6) 落盘 HTML 并写入 target_files
         from uuid import uuid4
 
-        template = Template(
-            id=str(uuid4()),
+        target_id = str(uuid4())
+        safe_title = _safe_filename(document_title)
+        output_filename = f"{safe_title}.html"
+
+        storage_path = f"targets/{req.workspace_id}/{target_id}.html"
+        out_path = Path("data") / storage_path
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(result.html_content, encoding="utf-8")
+
+        target = TargetFile(
+            id=target_id,
             workspace_id=req.workspace_id,
-            original_filename=filename,
-            file_format="md",
-            type=TemplateType.CUSTOM,
-            version=1,
-            locked=True,
-            storage_path=storage_rel,
-            description="whitepaper outline draft (data/Templates/drafts)",
+            template_id=template.id,
+            kb_id=collection_name,
+            job_id=None,
+            output_filename=output_filename,
+            storage_path=storage_path,
+            description=f"whitepaper generated from drafts/{filename} (collection={collection_name})",
         )
-        db.add(template)
+        db.add(target)
         db.commit()
-        db.refresh(template)
 
-    # 3) 组装服务依赖（真实 LLM + 真实 KB）
-    llm_runtime = _make_llm_runtime(db)
-    embedder = llm_runtime.get_model_for_callsite("vector_storage:embed_text")
-    reranker = llm_runtime.get_model_for_callsite("hybrid_search:rerank")
+        coverage = {
+            "template_id": template.id,
+            "outline_filename": filename,
+            "kb_input_root_raw": kb_input_root_raw,
+            "kb_input_root_resolved": kb_input_root.as_posix() if kb_input_root else None,
+            "kb_input_root_exists": bool(kb_input_root and kb_input_root.exists()),
+            "bm25_paths_count": len(bm25_paths or []),
+            "sections": [
+                {
+                    "section_id": s.section_id,
+                    "title": s.title,
+                    "coverage": s.coverage,
+                    "sources": s.sources,
+                    "rendered_charts": list(s.rendered_charts.keys()),
+                    "auto_charts_selected": _extract_auto_charts_selected(s.coverage),
+                    "auto_charts_detected": sum(
+                        int(c.get("count", 0))
+                        for c in (s.coverage or [])
+                        if isinstance(c, dict) and c.get("type") in {"auto_charts", "auto_chart"}
+                    ),
+                    "tokens_used": s.tokens_used,
+                    "generation_time_ms": s.generation_time_ms,
+                }
+                for s in result.sections
+            ],
+            "total_tokens": result.total_tokens,
+            "total_time_ms": result.total_time_ms,
+        }
 
-    vector_service = VectorStorageService(embedding_model=embedder)
-    bm25_path = resolve_latest_bm25_index_storage_path(
-        db=db,
-        collection_name=collection_name,
-        workspace_id=req.workspace_id,
-    )
-    hybrid_service = HybridSearchService(
-        vector_service=vector_service,
-        collection_name=collection_name,
-        reranker=reranker,
-        bm25_index_storage_path=bm25_path,
-    )
-
-    template_repo = TemplateRepository(db)
-    template_service = TemplateService(template_repo)
-    chart_renderer = ChartRendererService()
-    content_service = ContentGenerationService(
-        template_service=template_service,
-        hybrid_search_service=hybrid_service,
-        llm_runtime_service=llm_runtime,
-        chart_renderer_service=chart_renderer,
-        template_repository=template_repo,
-    )
-
-    # 4) 可选：先润色大纲（保持格式/层级）
-    polished_outline = outline_text
-    if polish_outline:
-        polished_outline = content_service.polish_outline(outline_text)
-
-    document_title = _extract_md_title(polished_outline) or _extract_md_title(outline_text) or filename
-
-    # 5) 检索参数（hybrid + rerank）
-    search_options = HybridSearchOptions(
-        top_k=top_k,
-        use_rerank=True,
-        rerank_top_n=rerank_top_n,
-    )
-
-    # 5) 生成内容（按章/子章召回，覆盖不足由 LLM 补全）
-    kb_input_root_raw = resolve_latest_kb_input_root(
-        db=db,
-        collection_name=collection_name,
-        workspace_id=req.workspace_id,
-    )
-    kb_input_root = Path(kb_input_root_raw) if kb_input_root_raw else None
-    result = await content_service.generate_content(
-        template_id=template.id,
-        collection_name=collection_name,
-        chart_configs=None,
-        search_options=search_options,
-        template_content_override=polished_outline,
-        document_title=document_title,
-        coverage_score_threshold=req.score_threshold,
-        kb_input_root=kb_input_root,
-    )
-
-    # 6) 落盘 HTML 并写入 target_files
-    from uuid import uuid4
-
-    target_id = str(uuid4())
-    safe_title = _safe_filename(document_title)
-    output_filename = f"{safe_title}.html"
-
-    storage_path = f"targets/{req.workspace_id}/{target_id}.html"
-    out_path = Path("data") / storage_path
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(result.html_content, encoding="utf-8")
-
-    target = TargetFile(
-        id=target_id,
-        workspace_id=req.workspace_id,
-        template_id=template.id,
-        kb_id=collection_name,
-        job_id=None,
-        output_filename=output_filename,
-        storage_path=storage_path,
-        description=f"whitepaper generated from drafts/{filename} (collection={collection_name})",
-    )
-    db.add(target)
-    db.commit()
-
-    coverage = {
-        "template_id": template.id,
-        "outline_filename": filename,
-        "sections": [
-            {
-                "section_id": s.section_id,
-                "title": s.title,
-                "coverage": s.coverage,
-                "sources": s.sources,
-                "rendered_charts": list(s.rendered_charts.keys()),
-                "tokens_used": s.tokens_used,
-                "generation_time_ms": s.generation_time_ms,
-            }
-            for s in result.sections
-        ],
-        "total_tokens": result.total_tokens,
-        "total_time_ms": result.total_time_ms,
-    }
-
-    return WhitepaperGenerateResponse(
-        request_id=get_request_id(),
-        target_id=target_id,
-        template_id=template.id,
-        storage_path=storage_path,
-        output_filename=output_filename,
-        document_title=document_title,
-        collection_name=collection_name,
-        coverage=coverage,
-        html_length=len(result.html_content or ""),
-        generated_at=result.generated_at.isoformat(),
-    )
+        return WhitepaperGenerateResponse(
+            request_id=get_request_id(),
+            target_id=target_id,
+            template_id=template.id,
+            storage_path=storage_path,
+            output_filename=output_filename,
+            document_title=document_title,
+            collection_name=collection_name,
+            coverage=coverage,
+            html_length=len(result.html_content or ""),
+            generated_at=result.generated_at.isoformat(),
+        )
 
 
 @router.post(
@@ -547,6 +685,18 @@ async def generate_whitepaper_stream(
     collection_name = await _resolve_collection_name(req, db)
     filename, outline_text = _resolve_outline(req)
 
+    # 流式也需要防重：避免同一 workspace 误触发并发双跑
+    lock = _get_whitepaper_gen_lock(req.workspace_id)
+    if lock.locked():
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "该工作空间已有白皮书生成任务在运行，请等待完成后再重试",
+                "workspace_id": req.workspace_id,
+            },
+        )
+    await lock.acquire()
+
     # 2) 确保 drafts 大纲已注册为 Template（只写 DB，不复制文件）
     storage_rel = f"Templates/drafts/{filename}".replace("\\", "/")
     template = (
@@ -576,7 +726,7 @@ async def generate_whitepaper_stream(
     reranker = llm_runtime.get_model_for_callsite("hybrid_search:rerank")
 
     vector_service = VectorStorageService(embedding_model=embedder)
-    bm25_path = resolve_latest_bm25_index_storage_path(
+    bm25_paths = resolve_all_bm25_index_storage_paths(
         db=db,
         collection_name=collection_name,
         workspace_id=req.workspace_id,
@@ -585,7 +735,7 @@ async def generate_whitepaper_stream(
         vector_service=vector_service,
         collection_name=collection_name,
         reranker=reranker,
-        bm25_index_storage_path=bm25_path,
+        bm25_index_storage_paths=bm25_paths,
     )
 
     template_repo = TemplateRepository(db)
@@ -628,7 +778,14 @@ async def generate_whitepaper_stream(
                 collection_name=collection_name,
                 workspace_id=req.workspace_id,
             )
-            kb_input_root = Path(kb_input_root_raw) if kb_input_root_raw else None
+            kb_input_root: Path | None = None
+            if kb_input_root_raw:
+                cand = Path(kb_input_root_raw)
+                if not cand.exists():
+                    cand2 = Path("data") / kb_input_root_raw
+                    if cand2.exists():
+                        cand = cand2
+                kb_input_root = cand if cand.exists() else None
 
             result = await content_service.generate_content(
                 template_id=template.id,
@@ -676,6 +833,7 @@ async def generate_whitepaper_stream(
                         "coverage": s.coverage,
                         "sources": s.sources,
                         "rendered_charts": list(s.rendered_charts.keys()),
+                        "auto_charts_selected": _extract_auto_charts_selected(s.coverage),
                         "tokens_used": s.tokens_used,
                         "generation_time_ms": s.generation_time_ms,
                     }
@@ -713,6 +871,11 @@ async def generate_whitepaper_stream(
                 }
             )
         finally:
+            try:
+                if lock.locked():
+                    lock.release()
+            except Exception:
+                pass
             await queue.put({"type": "end", "request_id": rid})
 
     async def _event_stream():
@@ -849,7 +1012,9 @@ def download_target_file(
         iter_file(),
         media_type="text/html",
         headers={
-            "Content-Disposition": f'attachment; filename="{output_filename}"',
+            "Content-Disposition": _build_content_disposition(
+                disposition="attachment", filename=output_filename
+            ),
             "Content-Length": str(file_path.stat().st_size),
         },
     )
@@ -882,7 +1047,9 @@ def view_target_file(
         iter_file(),
         media_type="text/html",
         headers={
-            "Content-Disposition": f'inline; filename="{target_file.output_filename}"',
+            "Content-Disposition": _build_content_disposition(
+                disposition="inline", filename=target_file.output_filename
+            ),
             "Content-Length": str(file_path.stat().st_size),
         },
     )

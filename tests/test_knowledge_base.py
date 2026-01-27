@@ -1,7 +1,7 @@
 """T095: 知识库构建（服务端）功能测试。
 
 约束（对齐项目要求）：
-- 使用真实数据（依赖 T094 产出 data/pic_to_json），不使用 mock
+- 使用真实数据（依赖 T094 产出 data/intermediates/**/pic_to_json），不使用 mock
 - 核心逻辑在服务端（API + Service），测试只做调用与验收
 - 检索策略固定：hybrid + rerank（通过 T023 的 callsite 注入 embedding/rerank）
 
@@ -44,7 +44,7 @@ def _pick_any_chart_name(input_root: Path) -> str:
 
 def test_t095_kb_build_and_query_hybrid_rerank():
     # 使用相对路径（以项目根目录为工作目录时生效）
-    input_root = Path("data") / "pic_to_json"
+    input_root = Path("data") / "intermediates"
     if not input_root.exists():
         raise RuntimeError(f"缺少真实数据目录，请先跑 T094：{input_root.as_posix()}")
 

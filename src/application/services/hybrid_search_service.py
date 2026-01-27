@@ -53,38 +53,44 @@ class HybridSearchService:
         vector_service: VectorStorageService | None = None,
         collection_name: str = "default",
         reranker: Any | None = None,
-        bm25_index_storage_path: str | None = None,
+        bm25_index_storage_paths: list[str] | None = None,
     ):
         """初始化混合检索服务。
 
         Args:
             vector_service: 向量存储服务
             collection_name: 默认集合名称
+            bm25_index_storage_paths: 多个 BM25 索引路径列表
         """
         self.vector_service = vector_service or VectorStorageService()
         self.default_collection = collection_name
         self._reranker = reranker
-        self._bm25_index_storage_path = bm25_index_storage_path
-        self._bm25_index = None
+        self._bm25_index_storage_paths = bm25_index_storage_paths or []
+        self._bm25_indices: list[Any] = []
         self._bm25_index_used = False
 
-    def _get_bm25_index(self):
-        """获取预建 BM25 索引（惰性加载并缓存）。"""
-        if not self._bm25_index_storage_path:
-            return None
-        if self._bm25_index is not None:
-            return self._bm25_index
-        try:
-            from src.application.services.bm25_index_service import BM25Index
+    def _get_bm25_indices(self):
+        """获取所有预建 BM25 索引（惰性加载并缓存）。"""
+        if not self._bm25_index_storage_paths:
+            return []
+        if self._bm25_indices:
+            return self._bm25_indices
 
-            path = self._bm25_index_storage_path.replace("\\", "/").strip()
-            idx_path = Path("data") / path
-            if not idx_path.exists():
-                return None
-            self._bm25_index = BM25Index.load(idx_path)
-            return self._bm25_index
-        except Exception:
-            return None
+        from src.application.services.bm25_index_service import BM25Index
+
+        loaded = []
+        for path in self._bm25_index_storage_paths:
+            try:
+                normalized = path.replace("\\", "/").strip()
+                idx_path = Path("data") / normalized
+                if idx_path.exists():
+                    idx = BM25Index.load(idx_path)
+                    loaded.append(idx)
+            except Exception:
+                continue
+
+        self._bm25_indices = loaded
+        return loaded
 
     def _get_reranker(self):
         """获取重排序模型（应由 T023 LLMRuntimeService 注入）。"""
@@ -268,30 +274,41 @@ class HybridSearchService:
         Returns:
             BM25 检索结果
         """
-        # 优先使用“预建 BM25 索引”
-        idx = self._get_bm25_index()
-        if idx is not None:
+        # 优先使用"预建 BM25 索引"（支持多个索引）
+        indices = self._get_bm25_indices()
+        if indices:
             self._bm25_index_used = True
-            raw = idx.search(query=query, top_k=top_k * 2, filter_metadata=filter_metadata)
-            out: list[SearchResult] = []
-            for i, item in enumerate(raw):
-                out.append(
-                    SearchResult(
-                        chunk_id=item["chunk_id"],
-                        content=item["content"],
-                        score=float(item.get("bm25_score_norm", 0.0)),
-                        search_type=SearchStrategy.BM25,
-                        source_file_id=str(item.get("source_file_id", "")),
-                        metadata={
-                            **(item.get("metadata") or {}),
-                            "bm25_score": float(item.get("bm25_score", 0.0)),
-                            "bm25_score_norm": float(item.get("bm25_score_norm", 0.0)),
-                            "bm25_index_used": True,
-                        },
-                        rank=i,
+            all_results: list[SearchResult] = []
+            # 从所有索引收集结果
+            for idx in indices:
+                raw = idx.search(query=query, top_k=top_k * 2, filter_metadata=filter_metadata)
+                for item in raw:
+                    all_results.append(
+                        SearchResult(
+                            chunk_id=item["chunk_id"],
+                            content=item["content"],
+                            score=float(item.get("bm25_score_norm", 0.0)),
+                            search_type=SearchStrategy.BM25,
+                            source_file_id=str(item.get("source_file_id", "")),
+                            metadata={
+                                **(item.get("metadata") or {}),
+                                "bm25_score": float(item.get("bm25_score", 0.0)),
+                                "bm25_score_norm": float(item.get("bm25_score_norm", 0.0)),
+                                "bm25_index_used": True,
+                            },
+                            rank=0,
+                        )
                     )
-                )
-            return out
+            # 根据 chunk_id 去重，保留分数最高的结果
+            seen: dict[str, SearchResult] = {}
+            for r in all_results:
+                if r.chunk_id not in seen or r.score > seen[r.chunk_id].score:
+                    seen[r.chunk_id] = r
+            # 按分数排序并返回 top_k
+            unique_results = sorted(seen.values(), key=lambda x: x.score, reverse=True)
+            for i, r in enumerate(unique_results):
+                r.rank = i
+            return unique_results[:top_k]
 
         # 兼容降级：如果没有预建索引，再走旧逻辑（查询时动态构建）
         try:
@@ -415,7 +432,7 @@ class HybridSearchService:
             bm25_task,
             return_exceptions=True,
         )
-        # 生成阶段允许“无知识库/无集合”场景：检索异常一律降级为空结果
+        # 生成阶段允许"无知识库/无集合"场景：检索异常一律降级为空结果
         vector_results = (
             []
             if isinstance(vector_results_raw, Exception)

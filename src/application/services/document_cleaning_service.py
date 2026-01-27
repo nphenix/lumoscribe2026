@@ -1701,7 +1701,8 @@ class ChartExtractionService:
 
         batch_id = datetime.now().strftime("%Y%m%d")
         artifact_id = str(uuid.uuid4())
-        relative_path = f"intermediates/{source_file_id}/chart_json/{artifact_id}.json"
+        # T094 输出路径：intermediates/{id}/pic_to_json/chart_json/
+        relative_path = f"intermediates/{source_file_id}/pic_to_json/chart_json/{artifact_id}.json"
 
         # 保存到数据库
         artifact = IntermediateArtifact(

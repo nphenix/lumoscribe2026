@@ -24,7 +24,6 @@ class StorageCategory(str, Enum):
     # 中间态产物
     INTERMEDIATES_MINERU_RAW = "intermediates/mineru_raw"
     INTERMEDIATES_CLEANED_DOC = "intermediates/cleaned_doc"
-    INTERMEDIATES_CHART_JSON = "intermediates/chart_json"
     INTERMEDIATES_KB_CHUNKS = "intermediates/kb_chunks"
 
 
@@ -85,7 +84,6 @@ def ensure_directory_structure(base_path: Path = DATA_ROOT) -> dict[str, Path]:
     # 中间态产物目录
     directories["intermediates/mineru_raw"] = base_path / "intermediates" / "mineru_raw"
     directories["intermediates/cleaned_doc"] = base_path / "intermediates" / "cleaned_doc"
-    directories["intermediates/chart_json"] = base_path / "intermediates" / "chart_json"
     directories["intermediates/kb_chunks"] = base_path / "intermediates" / "kb_chunks"
 
     # 创建所有目录

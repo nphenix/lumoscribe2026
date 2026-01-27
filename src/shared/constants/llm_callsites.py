@@ -15,6 +15,9 @@ from src.application.services.hybrid_search.callsites import (
 from src.application.services.mineru.callsites import (
     CALLSITES as MINERU_CALLSITES,
 )
+from src.application.services.outline_polish.callsites import (
+    CALLSITES as OUTLINE_POLISH_CALLSITES,
+)
 from src.application.services.vector_storage.callsites import (
     CALLSITES as VECTOR_STORAGE_CALLSITES,
 )
@@ -25,6 +28,7 @@ DEFAULT_CALLSITES = {
     **VECTOR_STORAGE_CALLSITES,
     **HYBRID_SEARCH_CALLSITES,
     **MINERU_CALLSITES,
+    **OUTLINE_POLISH_CALLSITES,
     # 未来在此处聚合其他模块的 callsite
 }
 

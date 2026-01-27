@@ -63,14 +63,23 @@ class WhitepaperHtmlRenderer:
         ]
 
         content_html = self._markdown_to_html(str(content))
-        parts.append(f"<div class='section-content'>{content_html}</div>")
 
-        # 图表（chart_renderer_service 产出 container_html/script_html）
-        for chart_id, chart in rendered_charts.items():
-            parts.append(f"<div class='chart-container' id='{_html.escape(str(chart_id))}'>")
-            parts.append(getattr(chart, "container_html", "") or "")
-            parts.append(getattr(chart, "script_html", "") or "")
-            parts.append("</div>")
+        # 图表插入位置：尽量“靠近正文”，避免全部堆在 section 末尾（不依赖 LLM 指定位置）
+        chart_blocks: list[str] = []
+        for chart_id in sorted(rendered_charts.keys()):
+            chart = rendered_charts.get(chart_id)
+            if chart is None:
+                continue
+            blk = [
+                f"<div class='chart-container' id='{_html.escape(str(chart_id))}'>",
+                (getattr(chart, "container_html", "") or ""),
+                (getattr(chart, "script_html", "") or ""),
+                "</div>",
+            ]
+            chart_blocks.append("\n".join(blk))
+
+        content_html = self._inject_charts_into_content(content_html, chart_blocks)
+        parts.append(f"<div class='section-content'>{content_html}</div>")
 
         # 参考来源
         if sources:
@@ -90,7 +99,72 @@ class WhitepaperHtmlRenderer:
 
         约束：仅支持本项目白皮书输出的常见子集（标题/列表/段落/粗斜体）。
         """
-        html_content = _html.escape(markdown or "")
+        raw = (markdown or "").replace("\r\n", "\n")
+        # 先把 Markdown 表格块转为占位符（避免被整体 escape 成一行文本）
+        placeholders: list[str] = []
+        tables: list[str] = []
+        lines = raw.split("\n")
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            nxt = lines[i + 1] if i + 1 < len(lines) else ""
+
+            def _is_table_sep(s: str) -> bool:
+                ss = (s or "").strip()
+                if "|" not in ss:
+                    return False
+                # 允许形如 | --- | ---: | :--- |
+                ss2 = ss.replace("|", "").replace(":", "").replace("-", "").strip()
+                return ss2 == ""
+
+            def _parse_row(s: str) -> list[str]:
+                ss = (s or "").strip()
+                # 去掉首尾 |
+                if ss.startswith("|"):
+                    ss = ss[1:]
+                if ss.endswith("|"):
+                    ss = ss[:-1]
+                cells = [c.strip() for c in ss.split("|")]
+                return [c for c in cells if c != ""]
+
+            if "|" in line and _is_table_sep(nxt):
+                header = _parse_row(line)
+                i += 2
+                rows: list[list[str]] = []
+                while i < len(lines):
+                    r = lines[i]
+                    if not r.strip():
+                        break
+                    if "|" not in r:
+                        break
+                    rows.append(_parse_row(r))
+                    i += 1
+                # 生成 HTML table（对单元格做 escape）
+                ths = "".join([f"<th>{_html.escape(c)}</th>" for c in header])
+                body_rows = []
+                for rr in rows:
+                    tds = "".join([f"<td>{_html.escape(c)}</td>" for c in rr])
+                    body_rows.append(f"<tr>{tds}</tr>")
+                table_html = (
+                    "<table class='md-table'>"
+                    f"<thead><tr>{ths}</tr></thead>"
+                    f"<tbody>{''.join(body_rows)}</tbody>"
+                    "</table>"
+                )
+                idx = len(tables)
+                token = f"__TABLE_BLOCK_{idx}__"
+                tables.append(table_html)
+                placeholders.append(token)
+                lines.insert(i, "")  # 保证块级分隔
+                lines.insert(i, token)
+                lines.insert(i, "")
+                i += 3
+                continue
+
+            i += 1
+
+        preprocessed = "\n".join(lines)
+        html_content = _html.escape(preprocessed)
 
         # 标题（从深到浅，避免 #### 被 ### 吃掉）
         html_content = re.sub(r"^###### (.+)$", r"<h6>\1</h6>", html_content, flags=re.MULTILINE)
@@ -127,7 +201,37 @@ class WhitepaperHtmlRenderer:
             html_content,
         )
 
+        # 表格占位符回填（去掉可能的 <p> 包裹）
+        for idx, table_html in enumerate(tables):
+            token = f"__TABLE_BLOCK_{idx}__"
+            html_content = html_content.replace(f"<p>{token}</p>", table_html)
+            html_content = html_content.replace(token, table_html)
+
         return html_content
+
+    def _inject_charts_into_content(self, content_html: str, chart_blocks: list[str]) -> str:
+        """把图表块插入到正文 HTML 内的“更靠前位置”，避免统一堆在末尾。"""
+        if not chart_blocks:
+            return content_html
+        html_s = content_html or ""
+        # 优先：按 h3/h4/h5/h6 逐个插入；没有则插在第一个段落后
+        heading_ends = [m.end() for m in re.finditer(r"</h[3-6]>", html_s)]
+        if heading_ends:
+            # 从后往前插入，避免位置偏移
+            inserts: list[tuple[int, str]] = []
+            for i, blk in enumerate(chart_blocks):
+                pos = heading_ends[min(i, len(heading_ends) - 1)]
+                inserts.append((pos, blk))
+            inserts.sort(key=lambda x: x[0], reverse=True)
+            for pos, blk in inserts:
+                html_s = html_s[:pos] + "\n" + blk + "\n" + html_s[pos:]
+            return html_s
+
+        p_end = html_s.find("</p>")
+        if p_end != -1:
+            pos = p_end + len("</p>")
+            return html_s[:pos] + "\n" + "\n".join(chart_blocks) + "\n" + html_s[pos:]
+        return html_s + "\n" + "\n".join(chart_blocks)
 
     def _get_default_styles(self) -> str:
         return """
@@ -208,6 +312,27 @@ class WhitepaperHtmlRenderer:
             .section-content li p {
                 /* 列表项中的段落不做首行缩进，避免双重缩进 */
                 text-indent: 0;
+            }
+            .section-content .md-table {
+                width: 100%;
+                border-collapse: collapse;
+                margin: 16px 0;
+                font-size: 14px;
+                background: #fff;
+            }
+            .section-content .md-table th,
+            .section-content .md-table td {
+                border: 1px solid #e5e7eb;
+                padding: 8px 10px;
+                vertical-align: top;
+            }
+            .section-content .md-table th {
+                background: #eef2ff;
+                color: #1f2937;
+                font-weight: 600;
+            }
+            .section-content .md-table td {
+                color: #111827;
             }
             .chart-container {
                 margin: 24px 0;

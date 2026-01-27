@@ -28,6 +28,10 @@ class LLMCallSiteRepository:
         """根据 key 获取 CallSite。"""
         return self.db.query(LLMCallSite).filter(LLMCallSite.key == key).first()
 
+    def get_by_scope(self, scope: str) -> LLMCallSite | None:
+        """根据 scope 获取 CallSite（通过 prompt_scope 字段匹配）。"""
+        return self.db.query(LLMCallSite).filter(LLMCallSite.prompt_scope == scope).first()
+
     def list(
         self,
         *,
