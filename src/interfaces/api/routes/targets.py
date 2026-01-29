@@ -29,6 +29,7 @@ from src.application.services.knowledge_base_service import (
     resolve_latest_kb_input_root,
 )
 from src.application.services.llm_runtime_service import LLMRuntimeService
+from src.application.services.outline_polish.outline_polish_service import OutlinePolishService
 from src.application.services.template_service import TemplateService
 from src.application.services.target_file_service import TargetFileService
 from src.application.services.vector_storage_service import VectorStorageService
@@ -544,18 +545,24 @@ async def generate_whitepaper(
         template_repo = TemplateRepository(db)
         template_service = TemplateService(template_repo)
         chart_renderer = ChartRendererService()
+        outline_polish_service = OutlinePolishService(
+            prompt_service=PromptRepository(db),
+            llm_call_site_repository=LLMCallSiteRepository(db),
+            llm_runtime_service=llm_runtime,
+        )
         content_service = ContentGenerationService(
             template_service=template_service,
             hybrid_search_service=hybrid_service,
             llm_runtime_service=llm_runtime,
             chart_renderer_service=chart_renderer,
             template_repository=template_repo,
+            outline_polish_service=outline_polish_service,
         )
 
         # 4) 可选：先润色大纲（保持格式/层级）
         polished_outline = outline_text
         if polish_outline:
-            polished_outline = content_service.polish_outline(outline_text)
+            polished_outline = await content_service.polish_outline(outline_text)
 
         document_title = _extract_md_title(polished_outline) or _extract_md_title(outline_text) or filename
 
@@ -741,17 +748,23 @@ async def generate_whitepaper_stream(
     template_repo = TemplateRepository(db)
     template_service = TemplateService(template_repo)
     chart_renderer = ChartRendererService()
+    outline_polish_service = OutlinePolishService(
+        prompt_service=PromptRepository(db),
+        llm_call_site_repository=LLMCallSiteRepository(db),
+        llm_runtime_service=llm_runtime,
+    )
     content_service = ContentGenerationService(
         template_service=template_service,
         hybrid_search_service=hybrid_service,
         llm_runtime_service=llm_runtime,
         chart_renderer_service=chart_renderer,
         template_repository=template_repo,
+        outline_polish_service=outline_polish_service,
     )
 
     polished_outline = outline_text
     if polish_outline:
-        polished_outline = content_service.polish_outline(outline_text)
+        polished_outline = await content_service.polish_outline(outline_text)
 
     document_title = _extract_md_title(polished_outline) or _extract_md_title(outline_text) or filename
 

@@ -18,6 +18,7 @@ from src.application.schemas.ingest import SearchResult
 from src.application.services.content_generation.chart_json_converter import ChartJsonConverter
 from src.application.services.content_generation.text_utils import (
     CHART_SNIPPET_RE,
+    CHART_ANCHOR_RE,
     norm_compact,
     read_text_best_effort,
 )
@@ -56,9 +57,25 @@ class AutoChartResolver:
             if not isinstance(obj, dict) or obj.get("is_chart") is not True:
                 continue
             name = norm_compact(str(obj.get("_chart_name") or obj.get("chart_name") or ""))
-            if not name:
+            if name:
+                mapping.setdefault(name, jf)
+        return mapping
+
+    def _build_chart_id_index(self, chart_dir: Path) -> dict[str, Path]:
+        """扫描 chart_dir，构建 {chart_id: json_path}。"""
+        mapping: dict[str, Path] = {}
+        if not chart_dir.exists():
+            return mapping
+        for jf in sorted(chart_dir.glob("*.json")):
+            try:
+                obj = json.loads(read_text_best_effort(jf))
+            except Exception:
                 continue
-            mapping.setdefault(name, jf)
+            if not isinstance(obj, dict) or obj.get("is_chart") is not True:
+                continue
+            cid = str(obj.get("_chart_id") or "").strip()
+            if cid:
+                mapping[cid] = jf
         return mapping
 
     def _build_chart_candidate_index(self, chart_dir: Path) -> list[dict[str, Any]]:
@@ -135,6 +152,7 @@ class AutoChartResolver:
         seen_chart_json: set[str] | None = None,
         sources_set: set[str] | None = None,
         hint_text: str | None = None,
+        allow_weak_match: bool = False,
         audit: list[dict[str, Any]] | None = None,
     ) -> list[ChartConfig]:
         """从命中 chunk 中抽取可渲染图表配置。"""
@@ -145,6 +163,7 @@ class AutoChartResolver:
 
         chart_configs: list[ChartConfig] = []
         chart_name_index_cache: dict[str, dict[str, Path]] = {}
+        chart_id_index_cache: dict[str, dict[str, Path]] = {}
         chart_candidate_index_cache: dict[str, list[dict[str, Any]]] = {}
         weak_matched_docs: set[str] = set()
         hint_norm = norm_compact(hint_text or "")
@@ -155,6 +174,8 @@ class AutoChartResolver:
             meta = r.metadata if isinstance(r.metadata, dict) else {}
             doc_rel = meta.get("doc_rel_path")
             if not doc_rel:
+                continue
+            if meta.get("chunk_type") == "chart":
                 continue
             doc_rel_s = str(doc_rel)
             content_s = r.content or ""
@@ -187,12 +208,25 @@ class AutoChartResolver:
                     continue
                 cfgs = self.converter.chart_json_to_configs(obj)
                 if cfgs:
+                    chart_id = str(obj.get("_chart_id") or "").strip()
                     cn = str(obj.get("_chart_name") or "").strip()
                     if cn:
                         sources_set.add(f"图表来源: {cn}")
-                    for cfg in cfgs:
+                    for j, cfg in enumerate(cfgs):
                         if len(chart_configs) >= max_auto:
                             break
+                        # 即使是 md_image 反查，也尽量绑定 chart_id，便于后续按 `[Chart: <id>]` 锚点插入
+                        if chart_id:
+                            extra = cfg.extra if isinstance(cfg.extra, dict) else {}
+                            cfg = cfg.model_copy(
+                                update={
+                                    "extra": {
+                                        **(extra or {}),
+                                        "chart_anchor_id": chart_id,
+                                        "chart_anchor_index": j,
+                                    }
+                                }
+                            )
                         chart_configs.append(cfg)
                         if audit is not None:
                             rel_path = None
@@ -220,6 +254,147 @@ class AutoChartResolver:
             doc_dir_rel = self._resolve_doc_dir_rel(doc_rel_s)
             chart_dir = (kb_input_root / doc_dir_rel / "chart_json").resolve()
             idx_key = str(chart_dir).replace("\\", "/")
+
+            # 0) [Chart: <id>] -> 精确 ID 匹配 (High Priority)
+            if idx_key not in chart_id_index_cache:
+                chart_id_index_cache[idx_key] = self._build_chart_id_index(chart_dir)
+            id_mapping = chart_id_index_cache.get(idx_key) or {}
+
+            chart_ids = meta.get("chart_ids")
+            if isinstance(chart_ids, str) and chart_ids.strip():
+                try:
+                    parsed = json.loads(chart_ids)
+                    chart_ids = parsed
+                except Exception:
+                    chart_ids = [x.strip() for x in chart_ids.split(",") if x.strip()]
+            if isinstance(chart_ids, list) and chart_ids:
+                for raw in chart_ids:
+                    if len(chart_configs) >= max_auto:
+                        break
+                    raw_s = str(raw or "").strip()
+                    if not raw_s:
+                        continue
+                    candidates = []
+                    if raw_s.startswith("chart_"):
+                        candidates.append(raw_s[6:])
+                    candidates.append(raw_s)
+                    path = None
+                    used_chart_id = None
+                    for cid in candidates:
+                        p = id_mapping.get(cid)
+                        if p is not None:
+                            path = p
+                            used_chart_id = cid
+                            break
+                    if path is None:
+                        continue
+                    key = str(path).replace("\\", "/")
+                    if key in seen_chart_json:
+                        continue
+                    seen_chart_json.add(key)
+                    try:
+                        obj = json.loads(read_text_best_effort(path))
+                    except Exception:
+                        continue
+                    if not isinstance(obj, dict) or obj.get("is_chart") is not True:
+                        continue
+                    cfgs = self.converter.chart_json_to_configs(obj)
+                    if cfgs:
+                        cn = str(obj.get("_chart_name") or "").strip()
+                        if cn:
+                            sources_set.add(f"图表来源: {cn}")
+                        for j, cfg in enumerate(cfgs):
+                            if len(chart_configs) >= max_auto:
+                                break
+                            extra = cfg.extra if isinstance(cfg.extra, dict) else {}
+                            cfg2 = cfg.model_copy(
+                                update={
+                                    "extra": {
+                                        **extra,
+                                        "chart_anchor_id": used_chart_id,
+                                        "chart_anchor_index": j,
+                                    }
+                                }
+                            )
+                            chart_configs.append(cfg2)
+                            if audit is not None:
+                                rel_path = None
+                                try:
+                                    rel_path = str(path.relative_to(kb_input_root)).replace("\\", "/")
+                                except Exception:
+                                    rel_path = str(path).replace("\\", "/")
+                                audit.append(
+                                    {
+                                        "type": "auto_chart",
+                                        "chart_name": cn,
+                                        "chart_type": cfg2.chart_type,
+                                        "doc_rel_path": doc_rel_s,
+                                        "doc_chart_json_path": rel_path,
+                                        "reason": f"chart_ids_meta:{raw_s}",
+                                        "cycle_detected": False,
+                                        "original_chart_type": None,
+                                    }
+                                )
+
+            if id_mapping:
+                for m in CHART_ANCHOR_RE.finditer(content_s):
+                    if len(chart_configs) >= max_auto:
+                        break
+                    chart_id = (m.group(1) or "").strip()
+                    path = id_mapping.get(chart_id)
+                    if path is None:
+                        continue
+                    key = str(path).replace("\\", "/")
+                    if key in seen_chart_json:
+                        continue
+                    seen_chart_json.add(key)
+                    try:
+                        obj = json.loads(read_text_best_effort(path))
+                    except Exception:
+                        continue
+                    if not isinstance(obj, dict) or obj.get("is_chart") is not True:
+                        continue
+                    cfgs = self.converter.chart_json_to_configs(obj)
+                    if cfgs:
+                        cn = str(obj.get("_chart_name") or "").strip()
+                        if cn:
+                            sources_set.add(f"图表来源: {cn}")
+                        for j, cfg in enumerate(cfgs):
+                            if len(chart_configs) >= max_auto:
+                                break
+                            extra = cfg.extra if isinstance(cfg.extra, dict) else {}
+                            cfg2 = cfg.model_copy(
+                                update={
+                                    "extra": {
+                                        **extra,
+                                        "chart_anchor_id": chart_id,
+                                        "chart_anchor_index": j,
+                                    }
+                                }
+                            )
+                            chart_configs.append(cfg2)
+                            if audit is not None:
+                                rel_path = None
+                                try:
+                                    rel_path = str(path.relative_to(kb_input_root)).replace("\\", "/")
+                                except Exception:
+                                    rel_path = str(path).replace("\\", "/")
+                                audit.append(
+                                    {
+                                        "type": "auto_chart",
+                                        "chart_name": cn,
+                                        "chart_type": cfg2.chart_type,
+                                        "doc_rel_path": doc_rel_s,
+                                        "doc_chart_json_path": rel_path,
+                                        "reason": f"chart_anchor:{chart_id}",
+                                        "cycle_detected": False,
+                                        "original_chart_type": None,
+                                    }
+                                )
+
+            if len(chart_configs) >= max_auto:
+                break
+
             if idx_key not in chart_name_index_cache:
                 chart_name_index_cache[idx_key] = self._build_chart_name_index(chart_dir)
             mapping = chart_name_index_cache.get(idx_key) or {}
@@ -244,11 +419,23 @@ class AutoChartResolver:
                         continue
                     cfgs = self.converter.chart_json_to_configs(obj)
                     if cfgs:
+                        chart_id = str(obj.get("_chart_id") or "").strip()
                         if cn_raw:
                             sources_set.add(f"图表来源: {cn_raw}")
-                        for cfg in cfgs:
+                        for j, cfg in enumerate(cfgs):
                             if len(chart_configs) >= max_auto:
                                 break
+                            if chart_id:
+                                extra = cfg.extra if isinstance(cfg.extra, dict) else {}
+                                cfg = cfg.model_copy(
+                                    update={
+                                        "extra": {
+                                            **(extra or {}),
+                                            "chart_anchor_id": chart_id,
+                                            "chart_anchor_index": j,
+                                        }
+                                    }
+                                )
                             chart_configs.append(cfg)
                             if audit is not None:
                                 rel_path = None
@@ -270,9 +457,9 @@ class AutoChartResolver:
                                     }
                                 )
 
-            # 3) 弱匹配补充（balanced）：仅在无 images/无 [图表] 时触发，且每个 doc 最多补 1 张
             if (
-                len(chart_configs) < max_auto
+                allow_weak_match
+                and len(chart_configs) < max_auto
                 and not has_image_hint
                 and not has_snippet_hint
                 and hint_norm

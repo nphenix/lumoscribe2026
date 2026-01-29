@@ -7,9 +7,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from pathlib import Path
 from typing import Any
+
+from llama_index.core.base.base_retriever import BaseRetriever
+from llama_index.core.bridge.pydantic import Field
+from llama_index.core.llms.mock import MockLLM
+from llama_index.core.postprocessor.types import BaseNodePostprocessor
+from llama_index.core.retrievers import AutoMergingRetriever, QueryFusionRetriever
+from llama_index.core.schema import NodeRelationship, NodeWithScore, QueryBundle, TextNode
+from llama_index.retrievers.bm25 import BM25Retriever
 
 from src.application.schemas.ingest import (
     HybridSearchOptions,
@@ -20,7 +29,6 @@ from src.application.schemas.ingest import (
     SearchStrategy,
 )
 from src.application.services.vector_storage_service import VectorStorageService
-from src.shared.config import get_settings
 from src.shared.errors import AppError
 
 
@@ -101,6 +109,229 @@ class HybridSearchService:
                 status_code=400,
             )
         return self._reranker
+ 
+    def _promote_to_parent(self, *, index, candidates: list[NodeWithScore]) -> list[NodeWithScore]:
+        out: list[NodeWithScore] = []
+        for nws in candidates:
+            if not isinstance(nws, NodeWithScore) or not isinstance(nws.node, TextNode):
+                continue
+            meta = dict(getattr(nws.node, "metadata", {}) or {})
+            if meta.get("chunk_type") == "chart":
+                continue
+            parent_id = None
+            rels = getattr(nws.node, "relationships", None) or {}
+            try:
+                parent = rels.get(NodeRelationship.PARENT)
+            except Exception:
+                parent = None
+            if parent is not None:
+                try:
+                    parent_id = getattr(parent, "node_id", None)
+                except Exception:
+                    parent_id = None
+            if isinstance(parent_id, str) and parent_id.strip():
+                try:
+                    pnode = index.docstore.get_node(parent_id.strip())
+                    out.append(NodeWithScore(node=pnode, score=nws.score))
+                    continue
+                except Exception:
+                    pass
+            out.append(nws)
+        return out
+ 
+    def _aggregate_by_node_id(self, candidates: list[NodeWithScore]) -> list[NodeWithScore]:
+        agg: dict[str, dict[str, Any]] = {}
+        for nws in candidates:
+            node = getattr(nws, "node", None)
+            nid = str(getattr(node, "node_id", "") or "").strip()
+            if not nid:
+                continue
+            try:
+                score = float(getattr(nws, "score", 0.0) or 0.0)
+            except Exception:
+                score = 0.0
+            cur = agg.get(nid)
+            if cur is None:
+                agg[nid] = {"node": node, "max": score, "sum": score, "hits": 1}
+                continue
+            cur["hits"] = int(cur.get("hits", 1)) + 1
+            cur["sum"] = float(cur.get("sum", 0.0)) + score
+            if score > float(cur.get("max", 0.0)):
+                cur["max"] = score
+        out: list[NodeWithScore] = []
+        for nid, info in agg.items():
+            node = info.get("node")
+            if node is None:
+                continue
+            meta = dict(getattr(node, "metadata", {}) or {})
+            meta["retrieval_hit_count"] = int(info.get("hits", 1))
+            meta["retrieval_score_max"] = float(info.get("max", 0.0))
+            meta["retrieval_score_sum"] = float(info.get("sum", 0.0))
+            try:
+                node.metadata = meta
+            except Exception:
+                pass
+            out.append(NodeWithScore(node=node, score=float(info.get("max", 0.0))))
+        return out
+ 
+    def _dedup_by_group(
+        self,
+        candidates: list[NodeWithScore],
+        *,
+        max_citation_sources: int = 5,
+    ) -> list[NodeWithScore]:
+        rep_by_key: dict[str, Any] = {}
+        seen_order: list[str] = []
+        seen_sources_by_key: dict[str, set[str]] = {}
+        citation_by_key: dict[str, list[dict[str, Any]]] = {}
+
+        def _extract_source(meta: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+            src_file_id = str(meta.get("source_file_id", "") or "").strip()
+            doc_rel = str(meta.get("doc_rel_path", "") or "").strip()
+            doc_title = str(meta.get("doc_title", "") or "").strip()
+            original_filename = str(meta.get("original_filename", "") or "").strip()
+            key = doc_rel or src_file_id
+            if not key:
+                return None
+            return (
+                key,
+                {
+                    "source_file_id": src_file_id,
+                    "doc_rel_path": doc_rel,
+                    "doc_title": doc_title,
+                    "original_filename": original_filename,
+                },
+            )
+
+        for nws in candidates:
+            node = getattr(nws, "node", None)
+            if node is None:
+                continue
+            meta = dict(getattr(node, "metadata", {}) or {})
+            gid = str(meta.get("dedup_group_id") or "").strip()
+            nid = str(getattr(node, "node_id", "") or "").strip()
+            key = gid or nid
+            if not key:
+                continue
+            rep = rep_by_key.get(key)
+            if rep is None:
+                rep_by_key[key] = nws
+                seen_order.append(key)
+                seen_sources_by_key[key] = set()
+                citation_by_key[key] = []
+
+            ext = _extract_source(meta)
+            if ext is not None:
+                src_key, src_obj = ext
+                if src_key not in seen_sources_by_key[key]:
+                    if len(citation_by_key[key]) < max(0, int(max_citation_sources)):
+                        citation_by_key[key].append(src_obj)
+                    seen_sources_by_key[key].add(src_key)
+
+        out: list[NodeWithScore] = []
+        for key in seen_order:
+            nws = rep_by_key.get(key)
+            if nws is None:
+                continue
+            node = getattr(nws, "node", None)
+            if node is None:
+                continue
+            meta = dict(getattr(node, "metadata", {}) or {})
+            citations = citation_by_key.get(key) or []
+            if citations:
+                meta["citation_sources"] = citations
+            try:
+                node.metadata = meta
+            except Exception:
+                pass
+            out.append(nws)
+        return out
+ 
+    def _apply_recall_bonus(self, candidates: list[NodeWithScore]) -> list[NodeWithScore]:
+        boosted: list[NodeWithScore] = []
+        for nws in candidates:
+            node = nws.node
+            meta = dict(getattr(node, "metadata", {}) or {})
+            bonus = 0.0
+            chart_ids = meta.get("chart_ids")
+            if isinstance(chart_ids, list) and chart_ids:
+                bonus += 0.03
+            elif isinstance(chart_ids, str) and chart_ids.strip() and chart_ids.strip() not in {"[]", "{}"}:
+                bonus += 0.03
+            try:
+                txt = node.get_content() or ""
+            except Exception:
+                txt = ""
+            if "images/" in txt or "[图表]" in txt:
+                bonus += 0.02
+            try:
+                hits = int(meta.get("retrieval_hit_count", 1) or 1)
+            except Exception:
+                hits = 1
+            if hits >= 2:
+                bonus += min(0.05, 0.01 * float(hits - 1))
+            if bonus:
+                boosted.append(NodeWithScore(node=node, score=float(nws.score or 0.0) + bonus))
+            else:
+                boosted.append(nws)
+        return boosted
+ 
+    def _parse_chart_ids(self, meta: dict[str, Any]) -> list[str]:
+        raw = meta.get("chart_ids")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+                raw = parsed
+            except Exception:
+                raw = [x.strip() for x in raw.split(",") if x.strip()]
+        if isinstance(raw, list):
+            out: list[str] = []
+            for x in raw:
+                s = str(x or "").strip()
+                if s and s not in out:
+                    out.append(s)
+            return out
+        return []
+ 
+    def _expand_chart_children(
+        self,
+        *,
+        index,
+        parents: list[NodeWithScore],
+        max_total_charts: int,
+        max_charts_per_parent: int,
+    ) -> tuple[list[NodeWithScore], int]:
+        expanded: list[NodeWithScore] = []
+        seen: set[str] = set()
+        charts_added = 0
+        for nws in parents:
+            node = getattr(nws, "node", None)
+            nid = str(getattr(node, "node_id", "") or "").strip()
+            if nid and nid not in seen:
+                seen.add(nid)
+                expanded.append(nws)
+            meta = dict(getattr(node, "metadata", {}) or {})
+            chart_ids = self._parse_chart_ids(meta)
+            if not chart_ids:
+                continue
+            per = 0
+            for cid in chart_ids:
+                if charts_added >= max(0, int(max_total_charts)):
+                    break
+                if per >= max(0, int(max_charts_per_parent)):
+                    break
+                try:
+                    cnode = index.docstore.get_node(str(cid))
+                except Exception:
+                    continue
+                cnid = str(getattr(cnode, "node_id", "") or "").strip()
+                if not cnid or cnid in seen:
+                    continue
+                seen.add(cnid)
+                expanded.append(NodeWithScore(node=cnode, score=nws.score))
+                charts_added += 1
+                per += 1
+        return expanded, charts_added
 
     async def _rerank_results(
         self,
@@ -404,93 +635,237 @@ class HybridSearchService:
 
         options = options or HybridSearchOptions()
         collection = collection_name or self.default_collection
-        # 每次 search 重置一次
         self._bm25_index_used = False
 
-        # 准备过滤条件
-        filter_metadata = options.filter_metadata
-
-        # 计算每种检索方法的结果数
-        effective_top_k = options.top_k * 3  # 为融合多拉取一些
-
-        # 并行检索
-        vector_task = self._search_vector(
-            query=query,
-            collection_name=collection,
-            top_k=effective_top_k,
-            filter_metadata=filter_metadata,
-        )
-        bm25_task = self._search_bm25(
-            query=query,
-            collection_name=collection,
-            top_k=effective_top_k,
-            filter_metadata=filter_metadata,
-        )
-
-        vector_results_raw, bm25_results_raw = await asyncio.gather(
-            vector_task,
-            bm25_task,
-            return_exceptions=True,
-        )
-        # 生成阶段允许"无知识库/无集合"场景：检索异常一律降级为空结果
-        vector_results = (
-            []
-            if isinstance(vector_results_raw, Exception)
-            else (vector_results_raw or [])
-        )
-        bm25_results = (
-            []
-            if isinstance(bm25_results_raw, Exception)
-            else (bm25_results_raw or [])
-        )
-
-        # 计算指标
-        metrics = SearchMetrics(
-            total_results=0,
-            vector_results=len(vector_results),
-            bm25_results=len(bm25_results),
-            bm25_index_used=self._bm25_index_used,
-            rerank_applied=options.use_rerank,
-        )
-
-        # 融合结果
-        if vector_results or bm25_results:
-            fused_results = self._rrf_fusion(
-                vector_results,
-                bm25_results,
-                vector_weight=options.vector_weight,
-                bm25_weight=options.bm25_weight,
+        try:
+            index = self.vector_service.get_llamaindex_index(collection)
+        except Exception:
+            metrics = SearchMetrics(
+                total_results=0,
+                vector_results=0,
+                bm25_results=0,
+                bm25_index_used=False,
+                rerank_applied=False,
             )
+            metrics.query_time_ms = (time.time() - start_time) * 1000
+            return HybridSearchResponse(
+                query=query,
+                results=[],
+                metrics=metrics,
+                total_time_ms=(time.time() - start_time) * 1000,
+            )
+
+        li_filters = self.vector_service.to_llamaindex_filters(options.filter_metadata)
+        effective_top_k = max(1, int(options.top_k) * 3)
+
+        base_vector_retriever = index.as_retriever(similarity_top_k=effective_top_k, filters=li_filters)
+        vector_retriever = AutoMergingRetriever(
+            base_vector_retriever,
+            index.storage_context,
+            simple_ratio_thresh=0.25,
+            verbose=False,
+        )
+        indices = self._get_bm25_indices()
+        if indices:
+            self._bm25_index_used = True
+
+            class _PrebuiltBM25Retriever(BaseRetriever):
+                def __init__(self):
+                    super().__init__(callback_manager=None, verbose=False)
+
+                def _retrieve(self, query_bundle: QueryBundle) -> list[NodeWithScore]:
+                    q = str(getattr(query_bundle, "query_str", "") or "")
+                    if not q.strip():
+                        return []
+
+                    all_items: list[dict[str, Any]] = []
+                    for idx in indices:
+                        try:
+                            raw = idx.search(
+                                query=q,
+                                top_k=effective_top_k * 2,
+                                filter_metadata=options.filter_metadata,
+                            )
+                            if isinstance(raw, list):
+                                all_items.extend([x for x in raw if isinstance(x, dict)])
+                        except Exception:
+                            continue
+
+                    if not all_items:
+                        return []
+
+                    best: dict[str, dict[str, Any]] = {}
+                    for it in all_items:
+                        cid = str(it.get("chunk_id", "") or "").strip()
+                        if not cid:
+                            continue
+                        prev = best.get(cid)
+                        try:
+                            score = float(it.get("bm25_score_norm", 0.0))
+                        except Exception:
+                            score = 0.0
+                        if prev is None:
+                            best[cid] = {**it, "bm25_score_norm": score}
+                            continue
+                        try:
+                            prev_score = float(prev.get("bm25_score_norm", 0.0))
+                        except Exception:
+                            prev_score = 0.0
+                        if score > prev_score:
+                            best[cid] = {**it, "bm25_score_norm": score}
+
+                    ranked = sorted(best.values(), key=lambda x: float(x.get("bm25_score_norm", 0.0) or 0.0), reverse=True)
+                    out: list[NodeWithScore] = []
+                    for it in ranked[:effective_top_k]:
+                        cid = str(it.get("chunk_id", "") or "").strip()
+                        if not cid:
+                            continue
+                        try:
+                            node = index.docstore.get_node(cid)
+                        except Exception:
+                            continue
+                        try:
+                            score = float(it.get("bm25_score_norm", 0.0))
+                        except Exception:
+                            score = 0.0
+                        out.append(NodeWithScore(node=node, score=score))
+                    return out
+
+            bm25_retriever = _PrebuiltBM25Retriever()
         else:
-            fused_results = []
+            bm25_retriever = BM25Retriever.from_defaults(docstore=index.docstore, similarity_top_k=effective_top_k)
+            self._bm25_index_used = True
 
-        # 如果请求重排序，应用重排序
-        if options.use_rerank and fused_results:
-            rerank_top_n = options.rerank_top_n or options.top_k
-            fused_results = await self._rerank_results(
-                query,
-                fused_results,
-                top_n=rerank_top_n,
+        fusion = QueryFusionRetriever(
+            [vector_retriever, bm25_retriever],
+            similarity_top_k=effective_top_k,
+            num_queries=1,
+            mode="reciprocal_rerank",
+            use_async=True,
+            llm=MockLLM(),
+            verbose=False,
+        )
+
+        candidates = await fusion.aretrieve(query)
+        if not isinstance(candidates, list):
+            candidates = []
+
+        primary_candidates = self._promote_to_parent(index=index, candidates=candidates)
+        primary_candidates = self._aggregate_by_node_id(primary_candidates)
+        primary_candidates = self._apply_recall_bonus(primary_candidates)
+        primary_candidates = sorted(primary_candidates, key=lambda x: float(getattr(x, "score", 0.0) or 0.0), reverse=True)
+        primary_candidates = self._dedup_by_group(primary_candidates)
+
+        rerank_applied = False
+        parent_top_k = max(1, int(options.top_k))
+        primary_nodes: list[NodeWithScore] = primary_candidates[:parent_top_k]
+
+        if options.use_rerank and primary_candidates:
+            try:
+                reranker = self._get_reranker()
+                pool_n = int(options.rerank_top_n or effective_top_k)
+                pool_n = max(parent_top_k, min(pool_n, len(primary_candidates)))
+                pool = primary_candidates[:pool_n]
+                post = _FlagEmbeddingRerankPostprocessor(reranker=reranker, top_n=pool_n)
+                loop = asyncio.get_running_loop()
+
+                def _do_rerank():
+                    return post.postprocess_nodes(pool, query_bundle=QueryBundle(query))
+
+                reranked_pool = await loop.run_in_executor(None, _do_rerank)
+                reranked_pool = reranked_pool if isinstance(reranked_pool, list) else []
+
+                used: set[str] = set()
+                merged: list[NodeWithScore] = []
+                for nws in reranked_pool:
+                    if not isinstance(nws, NodeWithScore):
+                        continue
+                    nid = str(getattr(nws.node, "node_id", "") or "")
+                    if not nid or nid in used:
+                        continue
+                    used.add(nid)
+                    merged.append(nws)
+                for nws in pool:
+                    nid = str(getattr(nws.node, "node_id", "") or "")
+                    if nid and nid not in used:
+                        used.add(nid)
+                        merged.append(nws)
+                for nws in primary_candidates[pool_n:]:
+                    nid = str(getattr(nws.node, "node_id", "") or "")
+                    if nid and nid not in used:
+                        used.add(nid)
+                        merged.append(nws)
+                    if len(merged) >= parent_top_k:
+                        break
+
+                primary_nodes = merged[:parent_top_k]
+                rerank_applied = True
+            except Exception:
+                primary_nodes = primary_candidates[:parent_top_k]
+
+        max_total_charts = max(0, int(getattr(options, "max_total_charts", 0) or 0))
+        if max_total_charts <= 0:
+            max_total_charts = min(12, max(3, int(options.top_k)))
+        max_charts_per_parent = max(0, int(getattr(options, "max_charts_per_parent", 0) or 0))
+        if max_charts_per_parent <= 0:
+            max_charts_per_parent = 2
+        expanded, charts_added = self._expand_chart_children(
+            index=index,
+            parents=primary_nodes,
+            max_total_charts=max_total_charts,
+            max_charts_per_parent=max_charts_per_parent,
+        )
+
+        results: list[SearchResult] = []
+        added: set[str] = set()
+        added_groups: set[str] = set()
+        primary_seen = 0
+        for nws in expanded:
+            node = getattr(nws, "node", None)
+            if node is None:
+                continue
+            nid = str(getattr(node, "node_id", "") or "").strip()
+            if not nid or nid in added:
+                continue
+            added.add(nid)
+            meta = dict(getattr(node, "metadata", {}) or {})
+            gid = str(meta.get("dedup_group_id") or "").strip()
+            if gid and gid in added_groups:
+                continue
+            if gid:
+                added_groups.add(gid)
+            is_chart = meta.get("chunk_type") == "chart"
+            if not is_chart:
+                if primary_seen >= int(options.top_k):
+                    break
+                primary_seen += 1
+            score = float(getattr(nws, "score", 0.0) or 0.0)
+            if options.score_threshold is not None and not is_chart:
+                if score < float(options.score_threshold):
+                    continue
+            results.append(
+                SearchResult(
+                    chunk_id=nid,
+                    content=node.get_content(),
+                    score=score,
+                    search_type=SearchStrategy.HYBRID,
+                    source_file_id=str(meta.get("source_file_id", "")),
+                    metadata=meta,
+                    rank=len(results),
+                )
             )
 
-        # 更新排名并按阈值过滤
-        final_results = []
-        for rank, result in enumerate(fused_results):
-            result.rank = rank
-
-            # 应用分数阈值
-            if options.score_threshold is None or result.score >= options.score_threshold:
-                final_results.append(result)
-
-            if len(final_results) >= options.top_k:
-                break
-
-        metrics.total_results = len(final_results)
+        metrics = SearchMetrics(
+            total_results=len(results),
+            vector_results=len(candidates),
+            bm25_results=len(candidates),
+            bm25_index_used=self._bm25_index_used,
+            rerank_applied=rerank_applied,
+        )
         metrics.query_time_ms = (time.time() - start_time) * 1000
-
         return HybridSearchResponse(
             query=query,
-            results=final_results,
+            results=results,
             metrics=metrics,
             total_time_ms=(time.time() - start_time) * 1000,
         )
@@ -679,3 +1054,49 @@ class HybridSearchService:
         """关闭服务。"""
         if self.vector_service:
             self.vector_service.close()
+
+
+class _FlagEmbeddingRerankPostprocessor(BaseNodePostprocessor):
+    top_n: int = Field(default=5, ge=1, le=2000)
+    reranker: Any = Field(exclude=True)
+
+    def _postprocess_nodes(
+        self,
+        nodes: list[NodeWithScore],
+        query_bundle: QueryBundle | None = None,
+    ) -> list[NodeWithScore]:
+        if not nodes:
+            return []
+        if query_bundle is None:
+            return nodes[: self.top_n]
+        docs = [n.node.get_content() for n in nodes]
+        raw = self.reranker.rerank(documents=docs, query=query_bundle.query_str, top_n=self.top_n)
+        if not isinstance(raw, list) or not raw:
+            return nodes[: self.top_n]
+        out: list[NodeWithScore] = []
+        used: set[int] = set()
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            idx = item.get("index")
+            if idx is None:
+                continue
+            try:
+                i = int(idx)
+            except Exception:
+                continue
+            if i < 0 or i >= len(nodes) or i in used:
+                continue
+            used.add(i)
+            nws = nodes[i]
+            try:
+                score = float(item.get("score", 0.0))
+            except Exception:
+                score = 0.0
+            meta = dict(getattr(nws.node, "metadata", {}) or {})
+            meta["rerank_score"] = score
+            nws.node.metadata = meta
+            out.append(NodeWithScore(node=nws.node, score=score))
+            if len(out) >= int(self.top_n):
+                break
+        return out or nodes[: self.top_n]

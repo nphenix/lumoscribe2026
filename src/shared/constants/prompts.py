@@ -15,7 +15,7 @@ from src.application.services.content_generation.prompts import (
 )
 from src.application.services.content_generation.prompts import (
     SCOPE_CONTENT_GENERATION_SECTION,
-    SCOPE_OUTLINE_POLISH as SCOPE_CONTENT_OUTLINE_POLISH,
+    SCOPE_CONTENT_GENERATION_SECTION_STRUCTURED,
 )
 from src.application.services.outline_polish.prompts import (
     PROMPTS as OUTLINE_POLISH_PROMPTS,
@@ -29,7 +29,7 @@ __all__ = [
     "SCOPE_DOC_CLEANING",
     "SCOPE_CHART_EXTRACTION",
     "SCOPE_CONTENT_GENERATION_SECTION",
-    "SCOPE_CONTENT_OUTLINE_POLISH",
+    "SCOPE_CONTENT_GENERATION_SECTION_STRUCTURED",
     "SCOPE_OUTLINE_POLISH",
     "DEFAULT_PROMPTS",
 ]

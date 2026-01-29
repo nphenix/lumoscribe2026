@@ -33,6 +33,7 @@ from src.application.services.content_generation_service import (
 )
 from src.application.services.hybrid_search_service import HybridSearchService
 from src.application.services.llm_runtime_service import LLMRuntimeService
+from src.application.services.outline_polish.outline_polish_service import OutlinePolishService
 from src.application.services.template_service import TemplateService
 from src.interfaces.api.deps import get_db
 from src.shared.db import Job
@@ -79,6 +80,11 @@ def get_content_generation_service(
     hybrid_search_service = HybridSearchService()
     chart_renderer_service = ChartRendererService()
     template_service = TemplateService(template_repo)
+    outline_polish_service = OutlinePolishService(
+        prompt_service=prompt_repo,
+        llm_call_site_repository=callsite_repo,
+        llm_runtime_service=llm_runtime,
+    )
 
     return ContentGenerationService(
         template_service=template_service,
@@ -86,6 +92,7 @@ def get_content_generation_service(
         llm_runtime_service=llm_runtime,
         chart_renderer_service=chart_renderer_service,
         template_repository=template_repo,
+        outline_polish_service=outline_polish_service,
     )
 
 

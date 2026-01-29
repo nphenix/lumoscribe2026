@@ -15,6 +15,7 @@ UUID_RE = re.compile(
 )
 
 CHART_SNIPPET_RE = re.compile(r"(?m)^\[图表\]\s*(.+?)\s*$")
+CHART_ANCHOR_RE = re.compile(r"\[Chart:\s*([^\]]+?)\s*\]")
 
 _THINK_BLOCK_RE = re.compile(r"(?is)<think>.*?</think>")
 _THINK_FENCE_RE = re.compile(r"(?is)```(?:thinking|thought|analysis)[\s\S]*?```")
@@ -81,6 +82,74 @@ def strip_leading_title_heading(text: str, *, title: str) -> str:
     while i < len(lines) and not lines[i].strip():
         i += 1
     return "\n".join(lines[i:]).strip()
+
+
+def strip_orphan_outline_list_items(text: str, *, skeleton: str) -> str:
+    if not text or not skeleton:
+        return (text or "").strip()
+
+    skeleton_items: list[str] = []
+    for line in skeleton.replace("\r\n", "\n").split("\n"):
+        s = line.strip()
+        if s.startswith("- "):
+            item = s[2:].strip()
+            if item:
+                skeleton_items.append(item)
+
+    if not skeleton_items:
+        return str(text or "").strip()
+
+    unique_items: list[str] = []
+    seen: set[str] = set()
+    for it in skeleton_items:
+        if it in seen:
+            continue
+        seen.add(it)
+        unique_items.append(it)
+
+    src = str(text or "").replace("\r\n", "\n")
+
+    has_heading: dict[str, bool] = {}
+    for it in unique_items:
+        pat = re.compile(rf"(?m)^#{{1,6}}\s+{re.escape(it)}\s*$")
+        has_heading[it] = pat.search(src) is not None
+
+    items_set = set(unique_items)
+    lines = src.split("\n")
+    out: list[str] = []
+    i = 0
+    n = len(lines)
+
+    while i < n:
+        line = lines[i]
+        lstrip = line.lstrip(" ")
+        if lstrip.startswith("- "):
+            item = lstrip[2:].strip()
+            if item in items_set and has_heading.get(item) is True:
+                indent = len(line) - len(lstrip)
+                j = i + 1
+                while j < n and not lines[j].strip():
+                    j += 1
+                if j >= n:
+                    i += 1
+                    while i < n and not lines[i].strip():
+                        i += 1
+                    continue
+
+                next_line = lines[j]
+                next_indent = len(next_line) - len(next_line.lstrip(" "))
+                if next_indent <= indent:
+                    i += 1
+                    while i < n and not lines[i].strip():
+                        i += 1
+                    continue
+
+        out.append(line.rstrip())
+        i += 1
+
+    cleaned = "\n".join(out).strip()
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned
 
 
 def norm_compact(s: str) -> str:

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -18,10 +19,17 @@ import chromadb
 from chromadb.config import Settings as ChromaSettings
 from chromadb.errors import NotFoundError
 
+from llama_index.core import StorageContext, VectorStoreIndex, load_index_from_storage
+from llama_index.core.base.embeddings.base import BaseEmbedding
+from llama_index.core.schema import NodeRelationship, RelatedNodeInfo, TextNode
+from llama_index.core.vector_stores import FilterOperator, MetadataFilter, MetadataFilters
+from llama_index.vector_stores.chroma import ChromaVectorStore
+
 from src.application.schemas.ingest import (
     KBChunk,
     VectorCollectionInfo,
 )
+from src.application.services.embedding_adapter import to_llamaindex_embedding
 from src.shared.config import get_settings
 from src.shared.errors import AppError
 
@@ -49,6 +57,7 @@ class VectorStorageService:
 
     # 批量操作大小
     BATCH_SIZE = 100
+    _LI_PERSIST_SUBDIR = "llamaindex"
 
     def __init__(
         self,
@@ -71,6 +80,7 @@ class VectorStorageService:
         self._client: chromadb.PersistentClient | None = None
         self._collection_kwargs = collection_kwargs or {}
         self._embedding_model = embedding_model
+        self._li_index_cache: dict[str, VectorStoreIndex] = {}
 
     def _get_client(self) -> chromadb.PersistentClient:
         """获取 ChromaDB 客户端。"""
@@ -102,6 +112,113 @@ class VectorStorageService:
                 message=f"无法导入嵌入模型: {e}",
                 code="embed_model_import_error",
             ) from e
+
+    def _get_li_embed_model(self) -> BaseEmbedding:
+        model = self._get_embed_model()
+        try:
+            return to_llamaindex_embedding(model)
+        except AppError as e:
+            raise VectorStorageError(
+                message=str(getattr(e, "message", None) or str(e)),
+                code="embed_dimension_infer_failed",
+            ) from e
+
+    def _li_persist_dir(self, collection_name: str) -> Path:
+        settings = get_settings()
+        root = Path(settings.storage_root) / self._LI_PERSIST_SUBDIR
+        return root / (collection_name or "default")
+
+    def _to_li_filters(self, filter_metadata: dict[str, Any] | None) -> MetadataFilters | None:
+        if not filter_metadata:
+            return None
+        filters: list[MetadataFilter] = []
+        for key, value in filter_metadata.items():
+            if isinstance(value, dict):
+                if "$eq" in value:
+                    filters.append(
+                        MetadataFilter(key=key, operator=FilterOperator.EQ, value=value["$eq"])
+                    )
+                elif "$ne" in value:
+                    filters.append(
+                        MetadataFilter(key=key, operator=FilterOperator.NE, value=value["$ne"])
+                    )
+                elif "$gt" in value:
+                    filters.append(
+                        MetadataFilter(key=key, operator=FilterOperator.GT, value=value["$gt"])
+                    )
+                elif "$gte" in value:
+                    filters.append(
+                        MetadataFilter(key=key, operator=FilterOperator.GTE, value=value["$gte"])
+                    )
+                elif "$lt" in value:
+                    filters.append(
+                        MetadataFilter(key=key, operator=FilterOperator.LT, value=value["$lt"])
+                    )
+                elif "$lte" in value:
+                    filters.append(
+                        MetadataFilter(key=key, operator=FilterOperator.LTE, value=value["$lte"])
+                    )
+                else:
+                    filters.append(
+                        MetadataFilter(key=key, operator=FilterOperator.EQ, value=value)
+                    )
+            else:
+                filters.append(MetadataFilter(key=key, operator=FilterOperator.EQ, value=value))
+        if not filters:
+            return None
+        return MetadataFilters(filters=filters)
+
+    def _flatten_metadata_for_li(self, meta: dict[str, Any]) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for k, v in (meta or {}).items():
+            if v is None or isinstance(v, (str, int, float)):
+                out[str(k)] = v
+                continue
+            try:
+                out[str(k)] = json.dumps(v, ensure_ascii=False, separators=(",", ":"))
+            except Exception:
+                out[str(k)] = str(v)
+        return out
+
+    def _load_or_create_li_index(self, collection_name: str) -> VectorStoreIndex:
+        key = str(collection_name or "default")
+        cached = self._li_index_cache.get(key)
+        if cached is not None:
+            return cached
+        embed_model = self._get_li_embed_model()
+        collection = self._ensure_collection(key, embedding_model=embed_model)
+        vector_store = ChromaVectorStore(chroma_collection=collection)
+        persist_dir = self._li_persist_dir(key)
+        if persist_dir.exists():
+            storage_context = StorageContext.from_defaults(
+                persist_dir=str(persist_dir),
+                vector_store=vector_store,
+            )
+            try:
+                index = load_index_from_storage(storage_context, embed_model=embed_model)
+            except Exception:
+                index = VectorStoreIndex(
+                    [],
+                    storage_context=storage_context,
+                    embed_model=embed_model,
+                    store_nodes_override=True,
+                )
+        else:
+            storage_context = StorageContext.from_defaults(vector_store=vector_store)
+            index = VectorStoreIndex(
+                [],
+                storage_context=storage_context,
+                embed_model=embed_model,
+                store_nodes_override=True,
+            )
+        self._li_index_cache[key] = index
+        return index
+
+    def get_llamaindex_index(self, collection_name: str) -> VectorStoreIndex:
+        return self._load_or_create_li_index(collection_name)
+
+    def to_llamaindex_filters(self, filter_metadata: dict[str, Any] | None) -> MetadataFilters | None:
+        return self._to_li_filters(filter_metadata)
 
     def _ensure_collection(
         self,
@@ -184,6 +301,7 @@ class VectorStorageService:
         chunks: list[KBChunk],
         collection_name: str,
         skip_embedding: bool = False,
+        docstore_only_nodes: list[TextNode] | None = None,
     ) -> int:
         """批量写入向量。
 
@@ -202,45 +320,49 @@ class VectorStorageService:
             return 0
 
         try:
-            # 确保集合存在
-            collection = self._ensure_collection(collection_name)
-
-            total_upserted = 0
             now = datetime.now().isoformat()
+            index = self._load_or_create_li_index(collection_name)
+            loop = asyncio.get_running_loop()
+
+            if docstore_only_nodes:
+                def _do_docstore() -> None:
+                    index.docstore.add_documents(docstore_only_nodes)
+
+                await loop.run_in_executor(None, _do_docstore)
+                index.storage_context.persist(persist_dir=str(self._li_persist_dir(collection_name)))
 
             for i in range(0, len(chunks), self.BATCH_SIZE):
                 batch = chunks[i : i + self.BATCH_SIZE]
-                batch_ids = [c.chunk_id for c in batch]
-                batch_docs = [c.content for c in batch]
-                batch_metas = [
-                    {
-                        **c.metadata,
+                nodes: list[TextNode] = []
+                for c in batch:
+                    meta = {
+                        **(c.metadata or {}),
                         "source_file_id": c.source_file_id,
                         "chunk_type": c.chunk_type.value,
                         "chunk_index": c.chunk_index,
                         "created_at": now,
                     }
-                    for c in batch
-                ]
+                    meta = self._flatten_metadata_for_li(meta)
+                    relationships: dict | None = {}
+                    parent_id = meta.get("parent_node_id") or meta.get("parent_id")
+                    if isinstance(parent_id, str) and parent_id.strip():
+                        relationships = {NodeRelationship.PARENT: RelatedNodeInfo(node_id=parent_id.strip())}
+                    node = TextNode(
+                        id_=c.chunk_id,
+                        text=c.content,
+                        metadata=meta,
+                        relationships=relationships,
+                        embedding=(list(c.embedding) if (skip_embedding and c.embedding is not None) else None),
+                    )
+                    nodes.append(node)
 
-                if skip_embedding and all(c.embedding is not None for c in batch):
-                    batch_embeds = [c.embedding for c in batch]  # type: ignore[list-item]
-                else:
-                    # 如果 chunk 自带 embedding 且 skip_embedding=False，优先使用；否则批量生成
-                    if all(c.embedding is not None for c in batch):
-                        batch_embeds = [c.embedding for c in batch]  # type: ignore[list-item]
-                    else:
-                        batch_embeds = await self._generate_embeddings(batch_docs)
+                def _do() -> None:
+                    index.insert_nodes(nodes)
 
-                collection.upsert(
-                    ids=batch_ids,
-                    documents=batch_docs,
-                    metadatas=batch_metas,
-                    embeddings=batch_embeds,
-                )
-                total_upserted += len(batch_ids)
+                await loop.run_in_executor(None, _do)
+                index.storage_context.persist(persist_dir=str(self._li_persist_dir(collection_name)))
 
-            return total_upserted
+            return len(chunks)
 
         except Exception as e:
             raise VectorStorageError(
@@ -273,44 +395,27 @@ class VectorStorageService:
             搜索结果
         """
         try:
-            client = self._get_client()
-            collection = client.get_collection(name=collection_name)
+            index = self._load_or_create_li_index(collection_name)
+            li_filters = self._to_li_filters(filter_metadata)
+            retriever = index.as_retriever(similarity_top_k=top_k, filters=li_filters)
+            loop = asyncio.get_running_loop()
 
-            # 生成查询嵌入
-            query_embedding = await self._generate_embedding(query)
+            def _do():
+                return retriever.retrieve(query)
 
-            # 构建过滤条件
-            where_clause = None
-            if filter_metadata:
-                where_clause = self._build_where_clause(filter_metadata)
-
-            # 搜索
-            results = collection.query(
-                query_embeddings=[query_embedding],
-                n_results=top_k,
-                where=where_clause,
-                include=["documents", "metadatas", "distances"] if include_scores else ["documents", "metadatas"],
-            )
-
-            # 格式化结果
-            formatted_results = []
-            if results["ids"] and results["ids"][0]:
-                for idx, chunk_id in enumerate(results["ids"][0]):
-                    result = {
-                        "id": chunk_id,
-                        "document": results["documents"][0][idx] if results["documents"] else "",
-                        "metadata": results["metadatas"][0][idx] if results["metadatas"] else {},
-                    }
-
-                    if include_scores and results.get("distances"):
-                        # 将距离转换为相似度分数
-                        distance = results["distances"][0][idx]
-                        score = 1.0 / (1.0 + distance)
-                        result["score"] = score
-
-                    formatted_results.append(result)
-
-            return formatted_results
+            nodes = await loop.run_in_executor(None, _do)
+            out: list[dict[str, Any]] = []
+            for nws in nodes:
+                n = nws.node
+                item = {
+                    "id": n.node_id,
+                    "document": n.get_content(),
+                    "metadata": dict(n.metadata or {}),
+                }
+                if include_scores:
+                    item["score"] = float(nws.score or 0.0)
+                out.append(item)
+            return out
 
         except NotFoundError:
             # 生成阶段（如白皮书生成）允许“无知识库”场景：此处降级为空结果，
@@ -404,6 +509,12 @@ class VectorStorageService:
         try:
             client = self._get_client()
             client.delete_collection(name=collection_name)
+            self._li_index_cache.pop(str(collection_name or "default"), None)
+            persist_dir = self._li_persist_dir(collection_name)
+            if persist_dir.exists():
+                import shutil
+
+                shutil.rmtree(persist_dir, ignore_errors=True)
             return True
 
         except NotFoundError:

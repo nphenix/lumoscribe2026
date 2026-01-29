@@ -16,6 +16,7 @@ import uuid
 from typing import Any
 
 from llama_index.core import Document as LIDocument
+from llama_index.core.base.embeddings.base import BaseEmbedding
 from llama_index.core.node_parser import (
     SentenceSplitter,
     SemanticSplitterNodeParser,
@@ -29,6 +30,7 @@ from src.application.schemas.ingest import (
     ChunkingStrategy,
     KBChunk,
 )
+from src.application.services.embedding_adapter import to_llamaindex_embedding
 from src.shared.errors import AppError
 
 
@@ -52,22 +54,56 @@ class ChunkingServiceError(AppError):
 
 class DocumentChunkingService:
     """文档切分服务。"""
+ 
+    _MD_TABLE_BLOCK_RE = re.compile(
+        r"(?:^\s*\|.+\|\s*\n\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\s*\|?\s*(?:\n\s*\|.*\|\s*)+)",
+        re.MULTILINE,
+    )
 
-    def __init__(self, config: ChunkingConfig | None = None):
+    def __init__(self, config: ChunkingConfig | None = None, *, embedding_model: Any | None = None):
         """初始化切分服务。
 
         Args:
             config: 切分配置
         """
         self.config = config or ChunkingConfig()
-        self._embed_model = None
+        self._embed_model: BaseEmbedding | None = None
+        if embedding_model is not None:
+            self._embed_model = to_llamaindex_embedding(embedding_model)
         self._semantic_splitter = None
+ 
+    def _truncate_table_block(self, table_md: str, *, max_chars: int) -> tuple[str, bool]:
+        s = (table_md or "").replace("\r\n", "\n").strip()
+        if not s:
+            return "", False
+        if max_chars <= 0 or len(s) <= max_chars:
+            return s, False
+        lines = [ln.rstrip() for ln in s.split("\n")]
+        if len(lines) <= 3:
+            cut = s[:max_chars].rstrip()
+            return (cut + " …（截断）").strip(), True
+        header = lines[:2]
+        out: list[str] = []
+        out.extend(header)
+        remain = max_chars - len("\n".join(out))
+        truncated = False
+        for ln in lines[2:]:
+            if remain <= 0:
+                truncated = True
+                break
+            if len(ln) + 1 > remain:
+                truncated = True
+                break
+            out.append(ln)
+            remain -= len(ln) + 1
+        if truncated:
+            out.append("…（表格过长已截断，保留表头与部分行）")
+        return "\n".join(out).strip(), truncated
 
     async def _get_embed_model(self):
         """获取嵌入模型。"""
         if self._embed_model is None:
             try:
-                from llama_index.core import Settings
                 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
                 self._embed_model = HuggingFaceEmbedding(
@@ -150,6 +186,19 @@ class DocumentChunkingService:
 
         return blocks
 
+    def _split_plain_paragraphs(self, text: str) -> list[dict[str, Any]]:
+        paragraphs = re.split(r"\n\n+", text)
+        blocks: list[dict[str, Any]] = []
+        for para in paragraphs:
+            para = para.strip()
+            if not para:
+                continue
+            if re.match(r"^(#{1,6}\s+|[\w\u4e00-\u9fff].{0,50}$)", para):
+                blocks.append({"content": para, "type": ChunkType.HEADING})
+            else:
+                blocks.append({"content": para, "type": ChunkType.PARAGRAPH})
+        return blocks
+ 
     def _split_paragraph_text(self, text: str) -> list[dict[str, Any]]:
         """分割普通段落文本。
 
@@ -159,31 +208,23 @@ class DocumentChunkingService:
         Returns:
             文本块列表
         """
-        # 按双换行符分割段落
-        paragraphs = re.split(r"\n\n+", text)
-        blocks = []
-
-        for para in paragraphs:
-            para = para.strip()
-            if not para:
-                continue
-
-            # 检测是否为标题
-            if re.match(r"^(#{1,6}\s+|[\w\u4e00-\u9fff].{0,50}$)", para):
-                blocks.append(
-                    {
-                        "content": para,
-                        "type": ChunkType.HEADING,
-                    }
-                )
-            else:
-                blocks.append(
-                    {
-                        "content": para,
-                        "type": ChunkType.PARAGRAPH,
-                    }
-                )
-
+        s = (text or "").replace("\r\n", "\n")
+        matches = list(self._MD_TABLE_BLOCK_RE.finditer(s))
+        if not matches:
+            return self._split_plain_paragraphs(s)
+        blocks: list[dict[str, Any]] = []
+        last_end = 0
+        for m in matches:
+            before = s[last_end : m.start()].strip()
+            if before:
+                blocks.extend(self._split_plain_paragraphs(before))
+            tbl = (m.group() or "").strip()
+            if tbl:
+                blocks.append({"content": tbl, "type": ChunkType.TABLE})
+            last_end = m.end()
+        after = s[last_end:].strip()
+        if after:
+            blocks.extend(self._split_plain_paragraphs(after))
         return blocks
 
     def _split_by_sentence(self, text: str) -> list[str]:
@@ -300,6 +341,30 @@ class DocumentChunkingService:
             nonlocal current_content, start_char, chunk_index
 
             if not current_content:
+                return
+ 
+            if current_type == ChunkType.TABLE:
+                txt, truncated = self._truncate_table_block(current_content, max_chars=chunk_size)
+                chunks.append(
+                    KBChunk(
+                        chunk_id=self._generate_chunk_id(source_file_id, chunk_index),
+                        content=txt,
+                        metadata={
+                            "chunk_type": current_type.value,
+                            "source": "document",
+                            "table_truncated": bool(truncated),
+                        },
+                        source_file_id=source_file_id,
+                        chunk_type=current_type,
+                        chunk_index=chunk_index,
+                        start_char=start_char,
+                        end_char=start_char + len(txt),
+                    )
+                )
+                chunk_index += 1
+                start_char += len(txt)
+                current_content = ""
+                start_char = max(0, start_char - chunk_overlap)
                 return
 
             # 按大小限制分割

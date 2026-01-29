@@ -164,7 +164,7 @@ async def build_kb(
         chunk_size=req.chunk_size or ChunkingConfig().chunk_size,
         chunk_overlap=req.chunk_overlap or ChunkingConfig().chunk_overlap,
     )
-    chunking_service = DocumentChunkingService(config=chunking_config)
+    chunking_service = DocumentChunkingService(config=chunking_config, embedding_model=embedder)
 
     kb_service = KnowledgeBaseService(
         chunking_service=chunking_service,
@@ -249,7 +249,7 @@ def _run_kb_build_in_thread(*, build_id: str, artifact_storage_path: str, req: K
             chunk_size=req.chunk_size or ChunkingConfig().chunk_size,
             chunk_overlap=req.chunk_overlap or ChunkingConfig().chunk_overlap,
         )
-        chunking_service = DocumentChunkingService(config=chunking_config)
+        chunking_service = DocumentChunkingService(config=chunking_config, embedding_model=embedder)
 
         kb_service = KnowledgeBaseService(
             chunking_service=chunking_service,
@@ -505,7 +505,7 @@ async def query_kb(
         bm25_index_storage_paths=bm25_paths,
     )
     kb_service = KnowledgeBaseService(
-        chunking_service=DocumentChunkingService(config=ChunkingConfig()),
+        chunking_service=DocumentChunkingService(config=ChunkingConfig(), embedding_model=embedder),
         vector_service=vector_service,
         hybrid_search_service=hybrid_service,
         source_file_repository=SourceFileRepository(db),

@@ -169,9 +169,18 @@ class OutlinePolishService:
 
             # Step 6: 调用 Agent
             # 遵循 LangChain 最佳实践：通过 messages 参数传递用户输入
-            result = agent.invoke({
-                "messages": [{"role": "user", "content": user_message}],
-            })
+            payload = {"messages": [{"role": "user", "content": user_message}]}
+            if hasattr(agent, "ainvoke"):
+                result = await agent.ainvoke(payload)
+            else:
+                import asyncio
+
+                loop = asyncio.get_running_loop()
+
+                def _do():
+                    return agent.invoke(payload)
+
+                result = await loop.run_in_executor(None, _do)
 
             # Step 7: 提取结构化输出
             # 遵循 LangChain 最佳实践：通过 structured_response 访问输出
@@ -240,12 +249,12 @@ class OutlinePolishService:
         Returns:
             渲染后的提示词
         """
-        return template.format(
-            industry=input_data.industry or DEFAULT_INDUSTRY,
-            report_type=input_data.report_type or DEFAULT_REPORT_TYPE,
-            language=input_data.language or DEFAULT_LANGUAGE,
-            style=input_data.style or DEFAULT_STYLE,
-        )
+        out = template or ""
+        out = out.replace("{industry}", input_data.industry or DEFAULT_INDUSTRY)
+        out = out.replace("{report_type}", input_data.report_type or DEFAULT_REPORT_TYPE)
+        out = out.replace("{language}", input_data.language or DEFAULT_LANGUAGE)
+        out = out.replace("{style}", input_data.style or DEFAULT_STYLE)
+        return out
 
     def _render_user_prompt(
         self,
@@ -261,10 +270,10 @@ class OutlinePolishService:
         Returns:
             渲染后的提示词
         """
-        return template.format(
-            original_outline=input_data.outline,
-            report_type=input_data.report_type or DEFAULT_REPORT_TYPE,
-        )
+        out = template or ""
+        out = out.replace("{original_outline}", input_data.outline or "")
+        out = out.replace("{report_type}", input_data.report_type or DEFAULT_REPORT_TYPE)
+        return out
 
 
 # 依赖注入类型标注

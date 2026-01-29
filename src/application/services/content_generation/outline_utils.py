@@ -13,6 +13,9 @@ def parse_outline_items_from_section_content(section_content: str) -> list[Outli
     约定：白皮书大纲子章节通常使用 Markdown 列表，例如：
     - `- 1.1 标题`（无序列表）
     - `1. 1.1 标题`（有序列表）
+    也支持 Markdown 标题，例如：
+    - `### 1.1 标题`
+    - `#### 1.1.1 标题`
     嵌套层级使用缩进（常见 2/4 空格均可），例如：
     - `    - 2.2.1 标题`
     """
@@ -21,15 +24,36 @@ def parse_outline_items_from_section_content(section_content: str) -> list[Outli
     for line in lines:
         # 兼容无序列表(-/*)与有序列表(1./1))
         m = re.match(r"^(\s*)(?:[-*]\s+|\d+[.)]\s+)(.*)$", line)
-        if not m:
-            continue
-        indent = m.group(1) or ""
-        raw = (m.group(2) or "").strip()
-        if not raw:
-            continue
+        depth: int | None = None
+        raw: str | None = None
+        indent = ""
+        if m:
+            indent = m.group(1) or ""
+            raw = (m.group(2) or "").strip()
+            if raw:
+                depth = 1 + max(0, len(indent) // 4)
+        else:
+            mh = re.match(r"^(\s*)(#{3,6})\s+(.+)$", line)
+            if mh:
+                indent = mh.group(1) or ""
+                hashes = mh.group(2) or "###"
+                raw = (mh.group(3) or "").strip()
+                if raw:
+                    heading_depth = max(1, len(hashes) - 2)
+                    depth = heading_depth + max(0, len(indent) // 4)
+            else:
+                mn = re.match(r"^(\s*)(\d+(?:\.\d+)+)\s+(.+)$", line)
+                if mn:
+                    indent = mn.group(1) or ""
+                    number0 = (mn.group(2) or "").strip()
+                    title0 = (mn.group(3) or "").strip()
+                    if number0 and title0:
+                        raw = f"{number0} {title0}".strip()
+                        number_depth = max(1, number0.count("."))
+                        depth = number_depth + max(0, len(indent) // 4)
 
-        # depth: 1 表示无缩进；每 4 个空格增加一级
-        depth = 1 + max(0, len(indent) // 4)
+        if not raw or depth is None:
+            continue
 
         m2 = re.match(r"^(\d+(?:\.\d+)+)\s+(.*)$", raw)
         if m2:

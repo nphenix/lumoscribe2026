@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import asyncio
 from pathlib import Path
 from uuid import uuid4
 
@@ -20,6 +21,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.interfaces.api.app import create_app
+from src.application.schemas.ingest import ChunkType, KBChunk
+from src.application.services.hybrid_search_service import HybridSearchService
+from src.application.services.vector_storage_service import VectorStorageService
+from src.application.schemas.ingest import HybridSearchOptions
+from llama_index.core.embeddings.mock_embed_model import MockEmbedding
+from llama_index.core.schema import TextNode
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -104,4 +111,129 @@ def test_t095_kb_build_and_query_hybrid_rerank():
     assert top["metadata"].get("doc_rel_path")
     # rerank 后应写入 rerank_score（由 HybridSearchService 注入）
     assert "rerank_score" in top["metadata"]
+
+
+def test_recursive_retrieval_expands_chart_children():
+    collection_name = f"t095_recursive_{uuid4().hex[:8]}"
+    class _TestEmbedding:
+        def get_text_embedding(self, text: str):
+            t = (text or "").lower()
+            if "revenue" in t or "trend" in t:
+                return [1.0, 0.0, 0.0]
+            if "cost" in t or "structure" in t:
+                return [0.0, 1.0, 0.0]
+            return [0.0, 0.0, 1.0]
+
+        def embed_documents(self, texts: list[str]):
+            return [self.get_text_embedding(t) for t in texts]
+
+    vs = VectorStorageService(embedding_model=_TestEmbedding())
+
+    parent1 = KBChunk(
+        chunk_id="p1",
+        content="revenue trend discussion for 2024",
+        chunk_type=ChunkType.PARAGRAPH,
+        source_file_id="sf1",
+        metadata={"doc_title": "d", "doc_rel_path": "x", "chart_ids": ["chart_c1"]},
+        chunk_index=0,
+    )
+    parent2 = KBChunk(
+        chunk_id="p2",
+        content="cost structure analysis",
+        chunk_type=ChunkType.PARAGRAPH,
+        source_file_id="sf1",
+        metadata={"doc_title": "d", "doc_rel_path": "x", "chart_ids": ["chart_c2"]},
+        chunk_index=1,
+    )
+    chart1 = KBChunk(
+        chunk_id="chart_c1",
+        content="[Chart: c1]\nchart_name: revenue trend\nchart_type: line",
+        chunk_type=ChunkType.CHART,
+        source_file_id="sf1",
+        metadata={"doc_title": "d", "doc_rel_path": "x", "chart_id": "c1"},
+        chunk_index=0,
+    )
+    chart2 = KBChunk(
+        chunk_id="chart_c2",
+        content="[Chart: c2]\nchart_name: cost structure\nchart_type: bar",
+        chunk_type=ChunkType.CHART,
+        source_file_id="sf1",
+        metadata={"doc_title": "d", "doc_rel_path": "x", "chart_id": "c2"},
+        chunk_index=0,
+    )
+
+    asyncio.run(vs.delete_collection(collection_name))
+    asyncio.run(
+        vs.upsert_vectors([parent1, parent2, chart1, chart2], collection_name=collection_name)
+    )
+
+    hs = HybridSearchService(vector_service=vs, collection_name=collection_name, reranker=None)
+    resp = asyncio.run(
+        hs.search(
+            query="revenue trend",
+            collection_name=collection_name,
+            options=HybridSearchOptions(top_k=1, use_rerank=False),
+        )
+    )
+    assert resp.results
+    ids = [r.chunk_id for r in resp.results]
+    assert "p1" in ids
+    assert "chart_c1" in ids
+    assert "p2" not in ids
+    assert "chart_c2" not in ids
+
+    parent_count = sum(1 for r in resp.results if r.metadata.get("chunk_type") != "chart")
+    assert parent_count == 1
+
+    asyncio.run(vs.delete_collection(collection_name))
+
+
+def test_parent_relationship_promotes_to_parent_node():
+    collection_name = f"t095_parent_{uuid4().hex[:8]}"
+
+    class _TestEmbedding:
+        def get_text_embedding(self, text: str):
+            t = (text or "").lower()
+            if "revenue" in t:
+                return [1.0, 0.0, 0.0]
+            return [0.0, 0.0, 1.0]
+
+        def embed_documents(self, texts: list[str]):
+            return [self.get_text_embedding(t) for t in texts]
+
+    vs = VectorStorageService(embedding_model=_TestEmbedding())
+    asyncio.run(vs.delete_collection(collection_name))
+
+    parent_id = "parent_sf1_0"
+    parent_node = TextNode(id_=parent_id, text="context container", metadata={"doc_title": "d", "doc_rel_path": "x"})
+
+    leaf = KBChunk(
+        chunk_id="leaf1",
+        content="revenue trend discussion",
+        chunk_type=ChunkType.PARAGRAPH,
+        source_file_id="sf1",
+        metadata={"doc_title": "d", "doc_rel_path": "x", "parent_node_id": parent_id},
+        chunk_index=0,
+    )
+
+    asyncio.run(
+        vs.upsert_vectors(
+            [leaf],
+            collection_name=collection_name,
+            docstore_only_nodes=[parent_node],
+        )
+    )
+
+    hs = HybridSearchService(vector_service=vs, collection_name=collection_name, reranker=None)
+    resp = asyncio.run(
+        hs.search(
+            query="revenue trend",
+            collection_name=collection_name,
+            options=HybridSearchOptions(top_k=1, use_rerank=False),
+        )
+    )
+    assert resp.results
+    assert resp.results[0].chunk_id == parent_id
+
+    asyncio.run(vs.delete_collection(collection_name))
 

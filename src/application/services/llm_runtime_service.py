@@ -1104,14 +1104,14 @@ class LLMRuntimeService:
 
     def _get_active_prompt(self, scope: str) -> Prompt:
         """获取激活的提示词。"""
-        items = self.prompt_repository.list(scope=scope, active=True, limit=1, offset=0)
-        if not items:
+        prompt = self.prompt_repository.get_active_prompt(scope)
+        if prompt is None:
             raise AppError(
                 code="prompt_not_found",
                 message=f"未找到激活提示词: {scope}",
                 status_code=404,
             )
-        return items[0]
+        return prompt
 
     def _resolve_api_key(self, provider: LLMProvider) -> str | None:
         """解析 API Key。"""

@@ -65,20 +65,20 @@ class WhitepaperHtmlRenderer:
         content_html = self._markdown_to_html(str(content))
 
         # 图表插入位置：尽量“靠近正文”，避免全部堆在 section 末尾（不依赖 LLM 指定位置）
-        chart_blocks: list[str] = []
-        for chart_id in sorted(rendered_charts.keys()):
-            chart = rendered_charts.get(chart_id)
+        chart_blocks_by_key: dict[str, str] = {}
+        for chart_key in sorted(rendered_charts.keys()):
+            chart = rendered_charts.get(chart_key)
             if chart is None:
                 continue
             blk = [
-                f"<div class='chart-container' id='{_html.escape(str(chart_id))}'>",
+                f"<div class='chart-container' id='{_html.escape(str(chart_key))}'>",
                 (getattr(chart, "container_html", "") or ""),
                 (getattr(chart, "script_html", "") or ""),
                 "</div>",
             ]
-            chart_blocks.append("\n".join(blk))
+            chart_blocks_by_key[str(chart_key)] = "\n".join(blk)
 
-        content_html = self._inject_charts_into_content(content_html, chart_blocks)
+        content_html = self._inject_charts_into_content(content_html, chart_blocks_by_key)
         parts.append(f"<div class='section-content'>{content_html}</div>")
 
         # 参考来源
@@ -209,29 +209,63 @@ class WhitepaperHtmlRenderer:
 
         return html_content
 
-    def _inject_charts_into_content(self, content_html: str, chart_blocks: list[str]) -> str:
-        """把图表块插入到正文 HTML 内的“更靠前位置”，避免统一堆在末尾。"""
-        if not chart_blocks:
+    def _inject_charts_into_content(self, content_html: str, chart_blocks_by_key: dict[str, str]) -> str:
+        """把图表块插入到正文 HTML 内（仅按锚点插入）。
+
+        约束：只替换正文中显式出现的 `[Chart: <id>]` 锚点，禁止“启发式”插入，
+        以避免图表重复/错位。
+        """
+        if not chart_blocks_by_key:
             return content_html
         html_s = content_html or ""
-        # 优先：按 h3/h4/h5/h6 逐个插入；没有则插在第一个段落后
-        heading_ends = [m.end() for m in re.finditer(r"</h[3-6]>", html_s)]
-        if heading_ends:
-            # 从后往前插入，避免位置偏移
-            inserts: list[tuple[int, str]] = []
-            for i, blk in enumerate(chart_blocks):
-                pos = heading_ends[min(i, len(heading_ends) - 1)]
-                inserts.append((pos, blk))
-            inserts.sort(key=lambda x: x[0], reverse=True)
-            for pos, blk in inserts:
-                html_s = html_s[:pos] + "\n" + blk + "\n" + html_s[pos:]
-            return html_s
+        used: set[str] = set()
 
-        p_end = html_s.find("</p>")
-        if p_end != -1:
-            pos = p_end + len("</p>")
-            return html_s[:pos] + "\n" + "\n".join(chart_blocks) + "\n" + html_s[pos:]
-        return html_s + "\n" + "\n".join(chart_blocks)
+        # 1) 锚点独占段落：<p>[Chart: id]</p> 直接替换为图表块
+        anchor_only_p = re.compile(r"<p>\s*\[Chart:\s*([^\]]+)\s*\]\s*</p>")
+
+        def _replace_anchor_only_p(m: re.Match[str]) -> str:
+            cid = (m.group(1) or "").strip()
+            blk = chart_blocks_by_key.get(cid)
+            if not blk:
+                return m.group(0)
+            used.add(cid)
+            return blk
+
+        html_s = anchor_only_p.sub(_replace_anchor_only_p, html_s)
+
+        # 2) 锚点位于段落末尾（推荐形态）：在该段落结束后插入图表块
+        anchor_re = re.compile(r"\[Chart:\s*([^\]]+?)\s*\]")
+        p_re = re.compile(r"<p>(.*?)</p>", flags=re.DOTALL)
+
+        def _process_p(m: re.Match[str]) -> str:
+            inner = m.group(1) or ""
+            ids = [x.strip() for x in anchor_re.findall(inner) if str(x or "").strip()]
+            if not ids:
+                return m.group(0)
+            blocks: list[str] = []
+            # 移除锚点文本
+            new_inner = anchor_re.sub("", inner)
+            new_inner = new_inner.strip()
+            for cid in ids:
+                blk = chart_blocks_by_key.get(cid)
+                if not blk:
+                    continue
+                if cid in used:
+                    continue
+                used.add(cid)
+                blocks.append(blk)
+            if not blocks:
+                return m.group(0)
+            out = []
+            if new_inner:
+                out.append(f"<p>{new_inner}</p>")
+            out.extend(blocks)
+            return "\n".join(out)
+
+        html_s = p_re.sub(_process_p, html_s)
+
+        # 不再启发式插入 remaining charts（避免错位/重复）
+        return html_s
 
     def _get_default_styles(self) -> str:
         return """

@@ -138,5 +138,4 @@ class PromptService:
 
     def get_active_prompt(self, scope: str) -> Prompt | None:
         """获取指定 scope 的激活提示词。"""
-        items = self.repository.list(scope=scope, active=True, limit=1, offset=0)
-        return items[0] if items else None
+        return self.repository.get_active_prompt(scope)

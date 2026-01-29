@@ -19,11 +19,14 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
+from llama_index.core.schema import TextNode
+
 from src.application.repositories.intermediate_artifact_repository import (
     IntermediateArtifactRepository,
 )
 from src.application.repositories.source_file_repository import SourceFileRepository
 from src.application.schemas.ingest import (
+    ChunkType,
     ChunkingConfig,
     ChunkingOptions,
     ChunkingStrategy,
@@ -34,6 +37,8 @@ from src.application.schemas.ingest import (
 from src.application.services.chunking_service import DocumentChunkingService
 from src.application.services.hybrid_search_service import HybridSearchService
 from src.application.services.vector_storage_service import VectorStorageService
+from src.application.services.content_generation.text_utils import CHART_SNIPPET_RE, norm_compact
+from src.application.services.rag_dedup import dedup_group_id
 from src.domain.entities.intermediate_artifact import IntermediateArtifact, IntermediateType
 from src.shared.errors import AppError
 from src.shared.logging import get_logger
@@ -401,6 +406,156 @@ def _summarize_chart_json(obj: dict[str, Any]) -> str:
     return "\n".join(lines).strip()
 
 
+def _chart_chunk_id(chart_id: str) -> str:
+    cid = str(chart_id or "").strip()
+    cid = re.sub(r"[^0-9a-zA-Z_-]+", "_", cid)
+    cid = cid.strip("_")
+    if not cid:
+        cid = uuid4().hex[:12]
+    return f"chart_{cid}"
+
+
+def _extract_chart_chunk_ids_from_text(*, text: str, doc_dir: Path) -> list[str]:
+    by_stem, by_name = _build_chart_lookup(doc_dir)
+    if not by_stem and not by_name:
+        return []
+    ids: set[str] = set()
+    for m in _MD_IMAGE_RE.finditer(str(text or "")):
+        rel = _normalize_rel_posix(m.group(1) or "")
+        if not rel.startswith("images/"):
+            continue
+        stem = Path(rel).stem
+        cid = by_stem.get(stem)
+        if cid:
+            ids.add(_chart_chunk_id(cid))
+    for m in CHART_SNIPPET_RE.finditer(str(text or "")):
+        name = str(m.group(1) or "").strip()
+        cid = by_name.get(norm_compact(name))
+        if cid:
+            ids.add(_chart_chunk_id(cid))
+    return sorted(ids)
+
+
+def _build_chart_lookup(doc_dir: Path) -> tuple[dict[str, str], dict[str, str]]:
+    by_stem: dict[str, str] = {}
+    by_name: dict[str, str] = {}
+    chart_dir = doc_dir / "chart_json"
+    if not chart_dir.exists():
+        return by_stem, by_name
+    for jf in sorted(chart_dir.glob("*.json")):
+        try:
+            obj = json.loads(_safe_read_text(jf))
+        except Exception:
+            continue
+        if not isinstance(obj, dict) or obj.get("is_chart") is not True:
+            continue
+        cid = str(obj.get("_chart_id") or "").strip()
+        if not cid:
+            continue
+        by_stem.setdefault(jf.stem, cid)
+        name = str(obj.get("_chart_name") or obj.get("chart_name") or "").strip()
+        if name:
+            by_name.setdefault(norm_compact(name), cid)
+    return by_stem, by_name
+
+
+def _attach_chart_ids_metadata(*, chunks: list[KBChunk], doc_dir: Path) -> None:
+    by_stem, by_name = _build_chart_lookup(doc_dir)
+    if not by_stem and not by_name:
+        return
+    img_line_re = re.compile(r"!\[[^\]]*]\(([^)]+)\)")
+    for c in chunks:
+        if c.chunk_type == ChunkType.CHART:
+            continue
+        ids: set[str] = set()
+        txt = str(c.content or "")
+        for m in img_line_re.finditer(txt):
+            rel = _normalize_rel_posix(m.group(1) or "")
+            if not rel.startswith("images/"):
+                continue
+            stem = Path(rel).stem
+            cid = by_stem.get(stem)
+            if cid:
+                ids.add(_chart_chunk_id(cid))
+        for m in CHART_SNIPPET_RE.finditer(txt):
+            name = str(m.group(1) or "").strip()
+            cid = by_name.get(norm_compact(name))
+            if cid:
+                ids.add(_chart_chunk_id(cid))
+        if ids:
+            c.metadata["chart_ids"] = sorted(ids)
+
+
+def _build_chart_chunks(
+    doc_dir: Path,
+    base_meta: dict[str, Any],
+) -> list[KBChunk]:
+    """扫描 chart_json 并构建图表专用语义 Chunk。"""
+    chunks: list[KBChunk] = []
+    chart_dir = doc_dir / "chart_json"
+    if not chart_dir.exists():
+        return chunks
+
+    for jf in sorted(chart_dir.glob("*.json")):
+        try:
+            content = _safe_read_text(jf)
+            obj = json.loads(content)
+        except Exception:
+            continue
+        
+        if not isinstance(obj, dict) or obj.get("is_chart") is not True:
+            continue
+
+        chart_id = obj.get("_chart_id")
+        if not chart_id:
+            continue
+
+        # 构建富语义文本
+        # 关键点：首行包含刚性锚点 [Chart: <id>]
+        chart_name = obj.get("_chart_name") or obj.get("chart_name") or "未命名图表"
+        desc = obj.get("description") or ""
+        raw_text = ""
+        cd = obj.get("chart_data")
+        if isinstance(cd, dict):
+            raw_text = cd.get("raw_text") or ""
+        elif isinstance(cd, str):
+            # 兼容旧格式：直接是字符串
+            raw_text = cd
+        chart_type = obj.get("chart_type") or "unknown"
+
+        # 限制摘要长度，避免 token 爆炸
+        if len(raw_text) > 800:
+            raw_text = raw_text[:800] + "..."
+
+        semantic_text = (
+            f"[Chart: {chart_id}]\n"
+            f"图表名称: {chart_name}\n"
+            f"图表类型: {chart_type}\n"
+            f"描述: {desc}\n"
+            f"数据摘要: {raw_text}"
+        )
+
+        chunk = KBChunk(
+            chunk_id=_chart_chunk_id(str(chart_id)),
+            content=semantic_text,
+            chunk_type=ChunkType.CHART,
+            source_file_id=str(base_meta.get("source_file_id") or "").strip(),
+            metadata={
+                **base_meta,
+                "is_chart_node": True,
+                "chart_id": chart_id,
+                "chart_name": chart_name,
+                "chart_type": chart_type,
+                # 记录相对路径，方便后续反查验证
+                "chart_json_path": jf.name, 
+            },
+            chunk_index=0, # 图表节点通常作为独立补充，index 设为 0 或特殊值
+        )
+        chunks.append(chunk)
+
+    return chunks
+
+
 def _inject_chart_snippets(*, md_text: str, doc_dir: Path) -> tuple[str, int]:
     """将 chart_json 的语义以短文本形式注入到 Markdown（在图片引用之后）。
 
@@ -442,6 +597,58 @@ def _inject_chart_snippets(*, md_text: str, doc_dir: Path) -> tuple[str, int]:
         injected += 1
 
     return "\n".join(out_lines), injected
+
+
+def _build_parent_nodes_for_chunks(
+    *,
+    chunks: list[KBChunk],
+    base_meta: dict[str, Any],
+    doc_dir: Path,
+    parent_chunk_size: int = 2400,
+) -> list[TextNode]:
+    non_chart = [c for c in chunks if c.chunk_type != ChunkType.CHART]
+    non_chart = sorted(non_chart, key=lambda x: int(x.chunk_index or 0))
+    if not non_chart:
+        return []
+
+    doc_id = str(base_meta.get("doc_id") or base_meta.get("source_file_id") or "doc").strip() or "doc"
+    parents: list[TextNode] = []
+
+    buf_parts: list[str] = []
+    buf_chunks: list[KBChunk] = []
+    parent_idx = 0
+
+    def _flush() -> None:
+        nonlocal parent_idx, buf_parts, buf_chunks
+        if not buf_parts or not buf_chunks:
+            buf_parts = []
+            buf_chunks = []
+            return
+        parent_id = f"parent_{doc_id}_{parent_idx}"
+        parent_text = "\n\n".join([p for p in buf_parts if p]).strip()
+        meta = {**base_meta, "chunk_type": "parent"}
+        chart_ids = _extract_chart_chunk_ids_from_text(text=parent_text, doc_dir=doc_dir)
+        if chart_ids:
+            meta["chart_ids"] = chart_ids
+        parents.append(TextNode(id_=parent_id, text=parent_text, metadata=meta))
+        for c in buf_chunks:
+            c.metadata["parent_node_id"] = parent_id
+        parent_idx += 1
+        buf_parts = []
+        buf_chunks = []
+
+    for c in non_chart:
+        t = (c.content or "").strip()
+        if not t:
+            continue
+        candidate = "\n\n".join(buf_parts + [t]) if buf_parts else t
+        if buf_parts and len(candidate) > int(parent_chunk_size):
+            _flush()
+        buf_parts.append(t)
+        buf_chunks.append(c)
+
+    _flush()
+    return parents
 
 
 @dataclass
@@ -754,9 +961,50 @@ class KnowledgeBaseService:
                     or ChunkingOptions(strategy=ChunkingStrategy.STRUCTURE_AWARE),
                 )
 
+                # --- 新增：构建图表独立语义索引 ---
+                _attach_chart_ids_metadata(chunks=chunks, doc_dir=doc_dir)
+                chart_chunks = _build_chart_chunks(doc_dir, base_meta)
+                if chart_chunks:
+                    chunks.extend(chart_chunks)
+                    # 统计修正：虽然是 chunk，但也算作一种 chart 注入形式
+                    # 这里暂时不加 total_chart_injected，因为那个指标用于衡量 Markdown 注入
+ 
+                doc_seen_groups: set[str] = set()
+                deduped_chunks: list[KBChunk] = []
+                for ch in chunks:
+                    meta = dict(ch.metadata or {})
+                    gid = dedup_group_id(
+                        content=ch.content or "",
+                        chunk_type=str(getattr(getattr(ch, "chunk_type", None), "value", "") or meta.get("chunk_type") or ""),
+                        metadata=meta,
+                    )
+                    if gid:
+                        meta["dedup_group_id"] = gid
+                    try:
+                        ch.metadata = meta
+                    except Exception:
+                        pass
+                    if getattr(ch, "chunk_type", None) == ChunkType.CHART:
+                        deduped_chunks.append(ch)
+                        continue
+                    if gid:
+                        key = f"{doc_id}:{gid}"
+                        if key in doc_seen_groups:
+                            continue
+                        doc_seen_groups.add(key)
+                    deduped_chunks.append(ch)
+                chunks = deduped_chunks
+
+                parent_nodes = _build_parent_nodes_for_chunks(
+                    chunks=chunks,
+                    base_meta=base_meta,
+                    doc_dir=doc_dir,
+                )
+
                 await self.vector_service.upsert_vectors(
                     chunks=chunks,
                     collection_name=options.collection_name,
+                    docstore_only_nodes=parent_nodes,
                 )
 
                 total_docs += 1
@@ -939,4 +1187,3 @@ class KnowledgeBaseService:
             collection_name=collection_name,
             options=opts,
         )
-

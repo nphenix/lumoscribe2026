@@ -2,7 +2,7 @@
 id: ai-doc-platform-phase1
 status: IN_PROGRESS
 created: 2026-01-16
-updated: 2026-01-26
+updated: 2026-01-29
 links:
   - ./spec.md
   - ./plan.md
@@ -270,6 +270,15 @@ links:
    - 服务: [`content_generation_service.py`](src/application/services/content_generation_service.py)
    - Schema: [`chart_spec.py`](src/application/schemas/chart_spec.py)
    - 能力: 模板 section 解析、RAG 上下文注入、LLM 内容生成、Markdown 转 HTML、最终 HTML 组装
+|- [-] T042A [P0] [US3] 图表落位与同图重复治理（结构化生成 + 召回层去重）
+
+   **说明**:
+   - 目标: 图表插入到引用段落；同图全篇只出现一次；避免重复 chunk 造成语义断裂
+   - 变更 (2026-01-29): section 结构化输出优先；锚点由确定性算法落位并清理错误锚点；全局 chart_id/chart_json 在召回层过滤
+   - 待验证: 重新生成样例 target HTML 并核对图表位置与去重效果
+
+   **相关文件**:
+   - 服务: [`service.py`](src/application/services/content_generation/service.py)、[`chart_anchor_postprocessor.py`](src/application/services/content_generation/chart_anchor_postprocessor.py)
 |- [x] T043 [P2] [US3] 图表 JSON → 图表渲染原子能力（基于 JSON 动态绘制 SVG/PNG/HTML snippet）
 
    **前置条件**:

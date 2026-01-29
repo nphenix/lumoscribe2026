@@ -18,6 +18,7 @@ class ChunkType(str, Enum):
     HEADING = "heading"
     CODE = "code"
     TABLE = "table"
+    CHART = "chart"
     MIXED = "mixed"
 
 
@@ -91,6 +92,8 @@ class HybridSearchOptions(BaseModel):
     score_threshold: float | None = Field(default=None, ge=0.0, le=1.0, description="分数阈值")
     vector_weight: float = Field(default=0.5, ge=0.0, le=1.0, description="向量检索权重")
     bm25_weight: float = Field(default=0.5, ge=0.0, le=1.0, description="BM25 检索权重")
+    max_total_charts: int | None = Field(default=None, ge=0, le=50, description="最多附带的图表结果数量")
+    max_charts_per_parent: int | None = Field(default=None, ge=0, le=20, description="每个父节点最多附带的图表数量")
 
 
 class SearchResult(BaseModel):
