@@ -18,6 +18,11 @@ import sys
 
 import pytest
 
+pytestmark = pytest.mark.skipif(
+    __import__("os").getenv("LUMO_RUN_MINERU_TESTS") != "1",
+    reason="需要 MinerU 中台配置与真实 PDF 数据（默认跳过）",
+)
+
 # Ensure project root is in path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:

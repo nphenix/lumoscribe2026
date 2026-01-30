@@ -50,21 +50,22 @@ class SectionLLMGenerator:
                         "section_title": section_title,
                     },
                 )
-            async for chunk in runnable.astream(payload):
-                s = "" if chunk is None else str(chunk)
-                if not s:
-                    continue
-                parts.append(s)
-                if on_event is not None:
-                    await self._emit(
-                        on_event,
-                        {
-                            "type": "token",
-                            "section_id": section_id,
-                            "section_title": section_title,
-                            "content": s,
-                        },
-                    )
+            async with self.llm_runtime_service.acquire_llm_slot(self.callsite_scope):
+                async for chunk in runnable.astream(payload):
+                    s = "" if chunk is None else str(chunk)
+                    if not s:
+                        continue
+                    parts.append(s)
+                    if on_event is not None:
+                        await self._emit(
+                            on_event,
+                            {
+                                "type": "token",
+                                "section_id": section_id,
+                                "section_title": section_title,
+                                "content": s,
+                            },
+                        )
             if on_event is not None:
                 await self._emit(
                     on_event,
@@ -81,7 +82,8 @@ class SectionLLMGenerator:
             def _do():
                 return runnable.invoke(payload)
 
-            raw = await loop.run_in_executor(None, _do)
+            async with self.llm_runtime_service.acquire_llm_slot(self.callsite_scope):
+                raw = await loop.run_in_executor(None, _do)
 
         text = strip_model_think(str(raw or ""))
         text = strip_leading_title_heading(text, title=section_title)

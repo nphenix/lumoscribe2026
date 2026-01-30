@@ -32,6 +32,10 @@ class GenerateRequest(BaseModel):
         default=False,
         description="是否启用大纲润色（仅对自定义模板有效）",
     )
+    polish_sections: bool = Field(
+        default=False,
+        description="是否启用章节级语言润色（不新增外部事实）",
+    )
     search_options: HybridSearchOptions | None = Field(
         default=None,
         description="混合检索选项",

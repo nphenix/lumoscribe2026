@@ -12,9 +12,13 @@ from __future__ import annotations
 
 import html as _html
 import re
+from pathlib import Path
 from typing import Any
 
 from src.domain.entities.template import Template
+from src.shared.logging import get_logger, log_extra
+
+log = get_logger(__name__)
 
 
 class WhitepaperHtmlRenderer:
@@ -26,6 +30,8 @@ class WhitepaperHtmlRenderer:
         template: Template,
         section_results: list[Any],
         document_title: str | None = None,
+        kb_input_root: Path | None = None,
+        chart_theme: str = "whitepaper-default",
     ) -> str:
         doc_title = (document_title or "").strip() or template.original_filename
         html_parts = [
@@ -45,12 +51,26 @@ class WhitepaperHtmlRenderer:
         ]
 
         for section in section_results:
-            html_parts.extend(self._render_section_html(section))
+            html_parts.extend(
+                self._render_section_html(
+                    section,
+                    kb_input_root=kb_input_root,
+                    chart_theme=chart_theme,
+                    workspace_id=str(getattr(template, "workspace_id", "") or "default"),
+                )
+            )
 
         html_parts.extend(["</div>", "</body>", "</html>"])
         return "\n".join(html_parts)
 
-    def _render_section_html(self, section: Any) -> list[str]:
+    def _render_section_html(
+        self,
+        section: Any,
+        *,
+        kb_input_root: Path | None,
+        chart_theme: str,
+        workspace_id: str,
+    ) -> list[str]:
         section_id = getattr(section, "section_id", "")
         title = getattr(section, "title", "")
         content = getattr(section, "content", "") or ""
@@ -67,16 +87,27 @@ class WhitepaperHtmlRenderer:
         # 图表插入位置：尽量“靠近正文”，避免全部堆在 section 末尾（不依赖 LLM 指定位置）
         chart_blocks_by_key: dict[str, str] = {}
         for chart_key in sorted(rendered_charts.keys()):
-            chart = rendered_charts.get(chart_key)
-            if chart is None:
+            chart_id = str(chart_key)
+            blk = self._build_chart_block(
+                chart_id=chart_id,
+                kb_input_root=kb_input_root,
+                chart_theme=chart_theme,
+                workspace_id=workspace_id,
+            )
+            chart_blocks_by_key[chart_id] = blk
+
+        for m in re.finditer(r"\[Chart:\s*([^\]]+?)\s*\]", str(content)):
+            cid = (m.group(1) or "").strip()
+            if not cid:
                 continue
-            blk = [
-                f"<div class='chart-container' id='{_html.escape(str(chart_key))}'>",
-                (getattr(chart, "container_html", "") or ""),
-                (getattr(chart, "script_html", "") or ""),
-                "</div>",
-            ]
-            chart_blocks_by_key[str(chart_key)] = "\n".join(blk)
+            if cid in chart_blocks_by_key:
+                continue
+            chart_blocks_by_key[cid] = self._build_chart_block(
+                chart_id=cid,
+                kb_input_root=kb_input_root,
+                chart_theme=chart_theme,
+                workspace_id=workspace_id,
+            )
 
         content_html = self._inject_charts_into_content(content_html, chart_blocks_by_key)
         parts.append(f"<div class='section-content'>{content_html}</div>")
@@ -267,6 +298,64 @@ class WhitepaperHtmlRenderer:
         # 不再启发式插入 remaining charts（避免错位/重复）
         return html_s
 
+    def _build_chart_block(
+        self,
+        *,
+        chart_id: str,
+        kb_input_root: Path | None,
+        chart_theme: str,
+        workspace_id: str,
+    ) -> str:
+        if kb_input_root is None:
+            return (
+                "<div class='chart-container chart-missing' "
+                f"id='{_html.escape(str(chart_id))}'>"
+                f"<div class='chart-missing-text'>[Chart: {_html.escape(str(chart_id))}]</div>"
+                "</div>"
+            )
+
+        chart_dir = (kb_input_root / "chart_json").resolve()
+        svg_path = (chart_dir / f"{chart_id}__{chart_theme}.svg").resolve()
+        png_path = (chart_dir / f"{chart_id}__{chart_theme}.png").resolve()
+        pick = svg_path if svg_path.exists() else (png_path if png_path.exists() else None)
+        if pick is None:
+            log.warning(
+                "whitepaper.chart_image_missing",
+                extra=log_extra(
+                    workspace_id=workspace_id,
+                    chart_id=chart_id,
+                    kb_input_root=str(kb_input_root),
+                    expected_svg=str(svg_path),
+                    expected_png=str(png_path),
+                ),
+            )
+            return (
+                "<div class='chart-container chart-missing' "
+                f"id='{_html.escape(str(chart_id))}'>"
+                f"<div class='chart-missing-text'>[Chart: {_html.escape(str(chart_id))}]</div>"
+                "</div>"
+            )
+
+        data_root = Path("data").resolve()
+        try:
+            rel_from_data = pick.relative_to(data_root).as_posix()
+            src = f"../../{rel_from_data}"
+        except Exception:
+            src = pick.as_uri()
+
+        ext = pick.suffix.lower().lstrip(".")
+        mime = "image/svg+xml" if ext == "svg" else "image/png"
+        return (
+            "<div class='chart-container' "
+            f"id='{_html.escape(str(chart_id))}'>"
+            f"<img class='chart-img' src='{_html.escape(src)}' "
+            f"alt='{_html.escape(str(chart_id))}' "
+            f"data-chart-id='{_html.escape(str(chart_id))}' "
+            f"data-chart-theme='{_html.escape(str(chart_theme))}' "
+            f"data-chart-mime='{_html.escape(mime)}'/>"
+            "</div>"
+        )
+
     def _get_default_styles(self) -> str:
         return """
             * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -374,6 +463,24 @@ class WhitepaperHtmlRenderer:
                 background-color: #fafafa;
                 border-radius: 8px;
             }
+            .chart-img {
+                display: block;
+                max-width: 100%;
+                height: auto;
+                margin: 0 auto;
+                background: #fff;
+            }
+            .chart-missing {
+                border: 1px dashed #d1d5db;
+                background: #fff7ed;
+            }
+            .chart-missing-text {
+                font-size: 14px;
+                color: #9a3412;
+                text-align: center;
+                padding: 24px 8px;
+                word-break: break-all;
+            }
             .sources {
                 margin-top: 24px;
                 padding-top: 16px;
@@ -389,4 +496,3 @@ class WhitepaperHtmlRenderer:
                 margin-left: 20px;
             }
         """
-

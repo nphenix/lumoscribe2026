@@ -170,17 +170,18 @@ class OutlinePolishService:
             # Step 6: 调用 Agent
             # 遵循 LangChain 最佳实践：通过 messages 参数传递用户输入
             payload = {"messages": [{"role": "user", "content": user_message}]}
-            if hasattr(agent, "ainvoke"):
-                result = await agent.ainvoke(payload)
-            else:
-                import asyncio
+            async with self._llm_runtime.acquire_llm_slot(callsite_key):
+                if hasattr(agent, "ainvoke"):
+                    result = await agent.ainvoke(payload)
+                else:
+                    import asyncio
 
-                loop = asyncio.get_running_loop()
+                    loop = asyncio.get_running_loop()
 
-                def _do():
-                    return agent.invoke(payload)
+                    def _do():
+                        return agent.invoke(payload)
 
-                result = await loop.run_in_executor(None, _do)
+                    result = await loop.run_in_executor(None, _do)
 
             # Step 7: 提取结构化输出
             # 遵循 LangChain 最佳实践：通过 structured_response 访问输出

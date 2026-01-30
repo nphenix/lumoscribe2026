@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ...shared.db import Base
@@ -38,6 +38,9 @@ class LLMCallSite(Base):
 
     config_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     prompt_scope: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    max_concurrency: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )  # CallSite 级并发上限（为空表示继承 Provider）
 
     enabled: Mapped[bool] = mapped_column(default=True)
     description: Mapped[str | None] = mapped_column(String(1024), nullable=True)

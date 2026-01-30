@@ -29,6 +29,9 @@ class LLMProviderCreate(BaseModel):
     api_key: str | None = Field(None, max_length=8192, description="API Key/Token 明文（可选）")
     api_key_env: str | None = Field(None, max_length=128, description="API Key 环境变量名（可选）")
     config: dict[str, Any] | None = Field(None, description="额外配置")
+    max_concurrency: int | None = Field(
+        None, ge=1, le=1024, description="Provider 级并发上限（为空表示使用默认/不限制）"
+    )
     enabled: bool = Field(True, description="是否启用")
     description: str | None = Field(None, max_length=1024, description="说明")
 
@@ -43,6 +46,9 @@ class LLMProviderUpdate(BaseModel):
     api_key: str | None = Field(None, max_length=8192, description="API Key/Token 明文（可选）")
     api_key_env: str | None = Field(None, max_length=128, description="API Key 环境变量名（可选）")
     config: dict[str, Any] | None = Field(None, description="额外配置")
+    max_concurrency: int | None = Field(
+        None, ge=1, le=1024, description="Provider 级并发上限（为空表示使用默认/不限制）"
+    )
     enabled: bool | None = Field(None, description="是否启用")
     description: str | None = Field(None, max_length=1024, description="说明")
 
@@ -57,6 +63,7 @@ class LLMProviderResponse(BaseModel):
     base_url: str | None
     api_key_env: str | None
     config: dict[str, Any] | None
+    max_concurrency: int | None
     enabled: bool
     description: str | None
     created_at: datetime
@@ -143,6 +150,9 @@ class LLMCallSiteCreate(BaseModel):
     provider_id: str | None = Field(None, max_length=36, description="绑定的 Provider ID（可为空）")
     config: dict[str, Any] | None = Field(None, description="调用点参数覆盖（JSON）")
     prompt_scope: str | None = Field(None, max_length=256, description="提示词 scope（为空则默认使用 key）")
+    max_concurrency: int | None = Field(
+        None, ge=1, le=1024, description="CallSite 级并发上限（为空表示继承 Provider）"
+    )
     enabled: bool = Field(True, description="是否启用")
     description: str | None = Field(None, max_length=1024, description="说明")
 
@@ -153,6 +163,9 @@ class LLMCallSiteUpdate(BaseModel):
     provider_id: str | None = Field(None, max_length=36, description="绑定的 Provider ID")
     config: dict[str, Any] | None = Field(None, description="调用点参数覆盖（JSON）")
     prompt_scope: str | None = Field(None, max_length=256, description="提示词 scope")
+    max_concurrency: int | None = Field(
+        None, ge=1, le=1024, description="CallSite 级并发上限（为空表示继承 Provider）"
+    )
     enabled: bool | None = Field(None, description="是否启用")
     description: str | None = Field(None, max_length=1024, description="说明")
 
@@ -166,6 +179,7 @@ class LLMCallSiteResponse(BaseModel):
     provider_id: str | None
     config: dict[str, Any] | None
     prompt_scope: str | None
+    max_concurrency: int | None
     enabled: bool
     description: str | None
     created_at: datetime

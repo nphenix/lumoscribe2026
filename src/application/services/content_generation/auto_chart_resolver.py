@@ -73,9 +73,7 @@ class AutoChartResolver:
                 continue
             if not isinstance(obj, dict) or obj.get("is_chart") is not True:
                 continue
-            cid = str(obj.get("_chart_id") or "").strip()
-            if cid:
-                mapping[cid] = jf
+            mapping[jf.stem] = jf
         return mapping
 
     def _build_chart_candidate_index(self, chart_dir: Path) -> list[dict[str, Any]]:
@@ -208,7 +206,7 @@ class AutoChartResolver:
                     continue
                 cfgs = self.converter.chart_json_to_configs(obj)
                 if cfgs:
-                    chart_id = str(obj.get("_chart_id") or "").strip()
+                    chart_id = stem
                     cn = str(obj.get("_chart_name") or "").strip()
                     if cn:
                         sources_set.add(f"图表来源: {cn}")

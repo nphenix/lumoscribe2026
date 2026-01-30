@@ -60,6 +60,7 @@ class LLMProviderService:
         api_key: str | None = None,
         api_key_env: str | None = None,
         config: dict | None = None,
+        max_concurrency: int | None = None,
         enabled: bool = True,
         description: str | None = None,
     ) -> LLMProvider:
@@ -90,6 +91,7 @@ class LLMProviderService:
             api_key=api_key,
             api_key_env=api_key_env,
             config_json=self._serialize_config(config),
+            max_concurrency=max_concurrency,
             enabled=enabled,
             description=description,
         )
@@ -125,6 +127,7 @@ class LLMProviderService:
         api_key: str | None = None,
         api_key_env: str | None = None,
         config: dict | None = None,
+        max_concurrency: int | None = None,
         enabled: bool | None = None,
         description: str | None = None,
     ) -> LLMProvider | None:
@@ -167,6 +170,9 @@ class LLMProviderService:
         if config is not None:
             provider.config_json = self._serialize_config(config)
 
+        if max_concurrency is not None:
+            provider.max_concurrency = max_concurrency
+
         if enabled is not None:
             provider.enabled = enabled
 
@@ -180,5 +186,26 @@ class LLMProviderService:
         
         注意：删除前需要确保没有 CallSite 或 Capability 绑定到此 Provider。
         """
-        # TODO: 可以添加检查，确保没有 CallSite 或 Capability 绑定到此 Provider
+        from src.domain.entities.llm_call_site import LLMCallSite
+        from src.application.repositories.llm_capability_repository import (
+            LLMCapabilityRepository,
+        )
+
+        db = self.repository.db
+        bound_callsites = (
+            db.query(LLMCallSite)
+            .filter(LLMCallSite.provider_id == provider_id)
+            .count()
+        )
+        bound_capabilities = LLMCapabilityRepository(db).count(provider_id=provider_id)
+        if bound_callsites or bound_capabilities:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "Provider 已被绑定，无法删除",
+                    "provider_id": provider_id,
+                    "bound_callsites": bound_callsites,
+                    "bound_capabilities": bound_capabilities,
+                },
+            )
         return self.repository.delete(provider_id)

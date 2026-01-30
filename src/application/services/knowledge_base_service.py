@@ -449,9 +449,7 @@ def _build_chart_lookup(doc_dir: Path) -> tuple[dict[str, str], dict[str, str]]:
             continue
         if not isinstance(obj, dict) or obj.get("is_chart") is not True:
             continue
-        cid = str(obj.get("_chart_id") or "").strip()
-        if not cid:
-            continue
+        cid = jf.stem
         by_stem.setdefault(jf.stem, cid)
         name = str(obj.get("_chart_name") or obj.get("chart_name") or "").strip()
         if name:
@@ -506,9 +504,7 @@ def _build_chart_chunks(
         if not isinstance(obj, dict) or obj.get("is_chart") is not True:
             continue
 
-        chart_id = obj.get("_chart_id")
-        if not chart_id:
-            continue
+        chart_id = jf.stem
 
         # 构建富语义文本
         # 关键点：首行包含刚性锚点 [Chart: <id>]

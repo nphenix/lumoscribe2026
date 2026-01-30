@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     whitepaper_top_k: int = 50
     whitepaper_rerank_top_n: int = 50
     whitepaper_polish_outline: bool = False
+    whitepaper_enable_semantic_dedup: bool = True
+    whitepaper_dedup_similarity_threshold: float = 0.92
+    whitepaper_strip_empty_outline_items: bool = True
+    whitepaper_polish_sections: bool = False
 
     # LLM 配置
     llm_openai_api_key: str = ""
@@ -31,6 +35,7 @@ class Settings(BaseSettings):
     llm_ollama_base_url: str = "http://localhost:11434"
     llm_flagembedding_host: str = "http://localhost:7904"
     llm_huggingface_cache: str = "./models/huggingface"
+    llm_default_max_concurrency: int = 4
 
     # MinerU 配置（在线服务）
     mineru_api_url: str = "https://mineru.net"

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import os
+import asyncio
+from contextlib import asynccontextmanager
 from typing import Any, Protocol, Union, runtime_checkable
 
 from langchain_core.callbacks.manager import CallbackManagerForLLMRun
@@ -30,6 +32,7 @@ from src.domain.entities.llm_capability import LLMCapability
 from src.domain.entities.llm_call_site import LLMCallSite
 from src.domain.entities.llm_provider import LLMProvider
 from src.domain.entities.prompt import Prompt
+from src.shared.config import get_settings
 from src.shared.errors import AppError
 from src.shared.logging import logger
 
@@ -352,6 +355,9 @@ class LLMRuntimeService:
     MODEL_KIND_RERANK = "rerank"
     MODEL_KIND_MULTIMODAL = "multimodal"
 
+    _semaphore_registry: dict[tuple[str, int], asyncio.Semaphore] = {}
+    _semaphore_registry_lock: asyncio.Lock | None = None
+
     @staticmethod
     def _parse_bool_maybe(v: Any) -> bool | None:
         if v is None:
@@ -512,6 +518,77 @@ class LLMRuntimeService:
         self.capability_repository = capability_repository
         self.callsite_repository = callsite_repository
         self.prompt_repository = prompt_repository
+
+    @classmethod
+    async def _get_or_create_semaphore(
+        cls,
+        *,
+        registry_key: str,
+        limit: int,
+    ) -> asyncio.Semaphore:
+        if cls._semaphore_registry_lock is None:
+            cls._semaphore_registry_lock = asyncio.Lock()
+        async with cls._semaphore_registry_lock:
+            sem = cls._semaphore_registry.get((registry_key, limit))
+            if sem is None:
+                sem = asyncio.Semaphore(limit)
+                cls._semaphore_registry[(registry_key, limit)] = sem
+            return sem
+
+    def resolve_effective_concurrency(self, callsite_key: str) -> dict[str, int | None]:
+        provider, callsite = self._resolve_callsite_provider(callsite_key)
+        default_limit = int(getattr(get_settings(), "llm_default_max_concurrency", 0) or 0)
+        provider_limit = provider.max_concurrency
+        callsite_limit = callsite.max_concurrency
+
+        provider_effective = provider_limit if provider_limit is not None else (default_limit or None)
+        if provider_effective is None:
+            effective = callsite_limit
+        elif callsite_limit is None:
+            effective = provider_effective
+        else:
+            effective = min(provider_effective, callsite_limit)
+
+        return {
+            "provider_limit": provider_limit,
+            "callsite_limit": callsite_limit,
+            "default_limit": default_limit or None,
+            "effective": effective,
+        }
+
+    @asynccontextmanager
+    async def acquire_llm_slot(self, callsite_key: str):
+        provider, callsite = self._resolve_callsite_provider(callsite_key)
+        default_limit = int(getattr(get_settings(), "llm_default_max_concurrency", 0) or 0)
+        provider_limit = provider.max_concurrency
+        provider_effective = provider_limit if provider_limit is not None else (default_limit or None)
+        callsite_limit = callsite.max_concurrency
+
+        acquired: list[asyncio.Semaphore] = []
+        try:
+            if callsite_limit is not None:
+                sem = await self._get_or_create_semaphore(
+                    registry_key=f"callsite:{callsite.id}",
+                    limit=int(callsite_limit),
+                )
+                await sem.acquire()
+                acquired.append(sem)
+
+            if provider_effective is not None:
+                sem = await self._get_or_create_semaphore(
+                    registry_key=f"provider:{provider.id}",
+                    limit=int(provider_effective),
+                )
+                await sem.acquire()
+                acquired.append(sem)
+
+            yield
+        finally:
+            for sem in reversed(acquired):
+                try:
+                    sem.release()
+                except ValueError:
+                    continue
 
     # ============== 统一构建接口 ==============
 

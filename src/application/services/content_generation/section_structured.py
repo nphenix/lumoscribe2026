@@ -100,7 +100,14 @@ class SectionStructuredGenerator:
                     }
                 ]
             }
-            result = await agent.ainvoke(payload) if hasattr(agent, "ainvoke") else await asyncio.get_running_loop().run_in_executor(None, lambda: agent.invoke(payload))
+            async with self._llm_runtime.acquire_llm_slot(self._callsite_scope):
+                result = (
+                    await agent.ainvoke(payload)
+                    if hasattr(agent, "ainvoke")
+                    else await asyncio.get_running_loop().run_in_executor(
+                        None, lambda: agent.invoke(payload)
+                    )
+                )
             structured: StructuredOutlineItemOutput = result["structured_response"]
             return structured, "tool_calling"
         except Exception as exc:
@@ -121,7 +128,10 @@ class SectionStructuredGenerator:
             ]
         ).strip()
         try:
-            resp = await asyncio.get_running_loop().run_in_executor(None, lambda: model.invoke(parser_prompt))
+            async with self._llm_runtime.acquire_llm_slot(self._callsite_scope):
+                resp = await asyncio.get_running_loop().run_in_executor(
+                    None, lambda: model.invoke(parser_prompt)
+                )
             raw = "" if resp is None else str(resp)
             raw = raw.strip()
             if raw.startswith("```"):

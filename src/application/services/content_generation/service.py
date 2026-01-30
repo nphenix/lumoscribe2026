@@ -56,6 +56,10 @@ from src.application.services.content_generation.text_utils import (
     strip_leading_title_heading,
     strip_orphan_outline_list_items,
 )
+from src.application.services.content_generation.pipeline import (
+    PipelineOptions,
+    SectionGenerationPipeline,
+)
 from src.application.services.content_generation.types import (
     ContentGenerationResult,
     OutlineItem,
@@ -68,7 +72,11 @@ from src.application.services.outline_polish.outline_polish_service import Outli
 from src.application.services.outline_polish.schema import OutlinePolishInput
 from src.application.services.template_service import TemplateService
 from src.domain.entities.template import Template
-from src.shared.constants.prompts import SCOPE_CONTENT_GENERATION_SECTION
+from src.shared.config import get_settings
+from src.shared.constants.prompts import (
+    SCOPE_CONTENT_GENERATION_SECTION,
+    SCOPE_CONTENT_GENERATION_SECTION_POLISH,
+)
 from src.shared.logging import get_logger, log_extra
 
 from .errors import ContentGenerationError
@@ -121,6 +129,10 @@ class ContentGenerationService:
         self._section_llm = SectionLLMGenerator(
             llm_runtime_service=self.llm_runtime_service,
             callsite_scope=SCOPE_CONTENT_GENERATION_SECTION,
+        )
+        self._section_polisher = SectionLLMGenerator(
+            llm_runtime_service=self.llm_runtime_service,
+            callsite_scope=SCOPE_CONTENT_GENERATION_SECTION_POLISH,
         )
         self._section_structured = SectionStructuredGenerator(
             llm_runtime_service=self.llm_runtime_service,
@@ -620,25 +632,23 @@ class ContentGenerationService:
         total_tokens = 0
 
         def _render_charts(cfgs: list[ChartConfig], *, section_key_prefix: str) -> None:
-            nonlocal global_auto_chart_idx
             for cfg in cfgs or []:
-                try:
-                    snippet = self.chart_renderer_service.render_template_snippet(cfg, library="echarts")
-                except Exception:
-                    continue
                 chart_key = None
                 extra = cfg.extra if isinstance(cfg.extra, dict) else None
                 if isinstance(extra, dict):
                     chart_key = str(extra.get("chart_anchor_id") or "").strip() or None
                 if not chart_key:
-                    global_auto_chart_idx += 1
-                    chart_key = f"{section_key_prefix}__auto_chart_{global_auto_chart_idx}"
+                    continue
                 if chart_key in rendered_charts:
                     n = 2
                     while f"{chart_key}__{n}" in rendered_charts:
                         n += 1
                     chart_key = f"{chart_key}__{n}"
-                rendered_charts[chart_key] = snippet
+                rendered_charts[chart_key] = ChartTemplateSnippet(
+                    chart_id=str(chart_key),
+                    container_html="",
+                    script_html="",
+                )
 
         intro_text = ""
         try:
@@ -1494,19 +1504,19 @@ class ContentGenerationService:
 
         rendered_charts: dict[str, ChartTemplateSnippet] = {}
         for idx, cfg in enumerate(auto_chart_configs or []):
-            try:
-                snippet = self.chart_renderer_service.render_template_snippet(cfg, library="echarts")
-                chart_key = None
-                extra = cfg.extra if isinstance(cfg.extra, dict) else None
-                if isinstance(extra, dict):
-                    chart_key = str(extra.get("chart_anchor_id") or "").strip() or None
-                if not chart_key:
-                    chart_key = f"{section.section_id}__auto_chart_{idx+1}"
-                if chart_key in rendered_charts:
-                    chart_key = f"{chart_key}__{idx+1}"
-                rendered_charts[chart_key] = snippet
-            except Exception:
+            chart_key = None
+            extra = cfg.extra if isinstance(cfg.extra, dict) else None
+            if isinstance(extra, dict):
+                chart_key = str(extra.get("chart_anchor_id") or "").strip() or None
+            if not chart_key:
                 continue
+            if chart_key in rendered_charts:
+                chart_key = f"{chart_key}__{idx+1}"
+            rendered_charts[chart_key] = ChartTemplateSnippet(
+                chart_id=str(chart_key),
+                container_html="",
+                script_html="",
+            )
 
         generation_time_ms = (time.time() - start_time) * 1000
         return SectionGenerationResult(
@@ -1538,6 +1548,7 @@ class ContentGenerationService:
         max_auto_charts_per_section: int | None = None,
         on_event: Callable[[dict[str, Any]], Any] | None = None,
         stream_tokens: bool = False,
+        polish_sections: bool = False,
     ) -> ContentGenerationResult:
         """生成内容并输出单 HTML。"""
         import time
@@ -1574,76 +1585,100 @@ class ContentGenerationService:
         if not doc_title:
             doc_title = template.original_filename
 
-        section_results: list[SectionGenerationResult] = []
-        total_tokens = 0
-        global_used_chunk_ids: set[str] = set()
-        global_seen_chart_json: set[str] = set()
-        global_seen_chart_ids: set[str] = set()
+        embedder = None
+        if bool(getattr(get_settings(), "whitepaper_enable_semantic_dedup", True)):
+            try:
+                embedder = self.llm_runtime_service.get_model_for_callsite("vector_storage:embed_text")
+            except Exception:
+                embedder = None
 
-        for idx, sec in enumerate(sections, start=1):
-            await self._emit(
-                on_event,
-                {
-                    "type": "section_start",
-                    "section_id": sec.section_id,
-                    "section_title": sec.title,
-                    "index": idx,
-                    "total": len(sections),
-                },
-            )
+        opts = PipelineOptions(
+            enable_semantic_dedup=bool(getattr(get_settings(), "whitepaper_enable_semantic_dedup", True))
+            and embedder is not None,
+            dedup_similarity_threshold=float(
+                getattr(get_settings(), "whitepaper_dedup_similarity_threshold", 0.92)
+            ),
+            enable_strip_empty_outline_items=bool(
+                getattr(get_settings(), "whitepaper_strip_empty_outline_items", True)
+            ),
+            enable_section_polish=bool(polish_sections)
+            or bool(getattr(get_settings(), "whitepaper_polish_sections", False)),
+        )
+        pipeline = SectionGenerationPipeline(
+            content_service=self,
+            options=opts,
+            embedding_model=embedder,
+        )
 
-            # 回退：按一级章节整章生成（不走分层生成），降低重复与结构错乱风险
-            context, coverage, skeleton, outline_items2, sources, auto_charts, _item_ctx, used_chunk_ids = await self.assemble_context_for_section(
-                sec,
-                collection_name=collection_name,
-                options=search_options,
-                coverage_score_threshold=coverage_score_threshold,
-                kb_input_root=kb_input_root,
-                max_auto_charts_per_section=max_auto_charts_per_section,
-                global_seen_chart_json=global_seen_chart_json,
-                global_seen_chart_ids=global_seen_chart_ids,
-                exclude_chunk_ids=global_used_chunk_ids,
-                on_event=on_event,
-            )
-            if used_chunk_ids:
-                global_used_chunk_ids.update([x for x in used_chunk_ids if str(x or "").strip()])
+        section_results, pstats, total_tokens = await pipeline.run(
+            sections=sections,
+            collection_name=collection_name,
+            search_options=search_options,
+            document_title=doc_title,
+            coverage_score_threshold=coverage_score_threshold,
+            kb_input_root=kb_input_root,
+            max_auto_charts_per_section=max_auto_charts_per_section,
+            on_event=on_event,
+            stream_tokens=bool(stream_tokens),
+        )
 
-            template_override_for_section = skeleton if skeleton else None
+        if kb_input_root is not None:
+            try:
+                chart_ids: list[str] = []
+                seen: set[str] = set()
+                for s in section_results:
+                    for cid in sorted((getattr(s, "rendered_charts", {}) or {}).keys()):
+                        c = str(cid or "").strip()
+                        if c and c not in seen:
+                            seen.add(c)
+                            chart_ids.append(c)
+                    import re as _re
 
-            r = await self._generate_section(
-                section=sec,
-                context=context,
-                template_content_override=template_override_for_section,
-                outline_items=outline_items2,
-                document_title=doc_title,
-                sources=sources,
-                auto_chart_configs=auto_charts,
-                coverage=coverage,
-                on_event=on_event,
-                stream_tokens=bool(stream_tokens),
-            )
-            section_results.append(r)
-            total_tokens += r.tokens_used
-            for k in (r.rendered_charts or {}).keys():
-                kk = str(k or "").strip()
-                if kk:
-                    global_seen_chart_ids.add(kk)
+                    for m in _re.finditer(r"\[Chart:\s*([^\]]+?)\s*\]", str(getattr(s, "content", "") or "")):
+                        c = str(m.group(1) or "").strip()
+                        if c and c not in seen:
+                            seen.add(c)
+                            chart_ids.append(c)
+                if chart_ids:
+                    from src.application.services.antv_rendering import AntvRenderingService
 
-            await self._emit(
-                on_event,
-                {
-                    "type": "section_done",
-                    "section_id": sec.section_id,
-                    "section_title": sec.title,
-                    "tokens_used": r.tokens_used,
-                    "rendered_charts": list(r.rendered_charts.keys()),
-                },
-            )
+                    AntvRenderingService().render_from_chart_json_dir(
+                        kb_input_root=kb_input_root,
+                        chart_ids=chart_ids,
+                        theme="whitepaper-default",
+                        force=False,
+                    )
+            except Exception as exc:
+                log.warning(
+                    "antv_render.pre_render_failed",
+                    extra=log_extra(kb_input_root=str(kb_input_root), error=str(exc)),
+                )
 
         html = WhitepaperHtmlRenderer().render(
             template=template,
             section_results=section_results,
             document_title=doc_title,
+            kb_input_root=kb_input_root,
+            chart_theme="whitepaper-default",
+        )
+
+        log.info(
+            "content_generation.pipeline_stats",
+            extra=log_extra(
+                template_id=template_id,
+                template_name=template.original_filename,
+                sections=len(section_results),
+                enable_semantic_dedup=opts.enable_semantic_dedup,
+                enable_strip_empty_outline_items=opts.enable_strip_empty_outline_items,
+                enable_section_polish=opts.enable_section_polish,
+                dedup_removed_within_sections=pstats.dedup_removed_within_sections,
+                dedup_removed_across_sections=pstats.dedup_removed_across_sections,
+                empty_outline_items_removed=pstats.empty_outline_items_removed,
+                polished_sections=pstats.polished_sections,
+                polish_skipped_by_validator=pstats.polish_skipped_by_validator,
+                postprocess_time_ms=round(pstats.postprocess_time_ms, 2),
+                polish_time_ms=round(pstats.polish_time_ms, 2),
+            ),
         )
 
         total_time_ms = (time.time() - start_time) * 1000
@@ -1656,6 +1691,30 @@ class ContentGenerationService:
             total_time_ms=total_time_ms,
             generated_at=datetime.now(),
             document_title=doc_title,
+        )
+
+    async def _polish_section(
+        self,
+        *,
+        section_id: str,
+        section_title: str,
+        skeleton: str,
+        draft_markdown: str,
+        document_title: str | None = None,
+        on_event: Callable[[dict[str, Any]], Any] | None = None,
+    ) -> tuple[str, int]:
+        payload = {
+            "document_title": (document_title or "").strip(),
+            "title": section_title,
+            "template_content": skeleton,
+            "draft_markdown": (draft_markdown or "").strip(),
+        }
+        return await self._section_polisher.generate(
+            section_id=section_id,
+            section_title=section_title,
+            payload=payload,
+            stream_tokens=False,
+            on_event=on_event,
         )
 
     def preprocess(self, *, template_id: str) -> PreprocessResponse:

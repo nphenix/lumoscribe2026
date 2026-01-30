@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, String, Text
+from sqlalchemy import DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ...shared.db import Base
@@ -45,6 +45,9 @@ class LLMProvider(Base):
     config_json: Mapped[str | None] = mapped_column(
         Text, nullable=True
     )  # 额外配置 JSON（字符串）
+    max_concurrency: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )  # Provider 级并发上限（为空表示使用默认/不限制）
 
     enabled: Mapped[bool] = mapped_column(default=True)  # 是否启用
     description: Mapped[str | None] = mapped_column(

@@ -20,6 +20,11 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+pytestmark = pytest.mark.skipif(
+    os.getenv("LUMO_RUN_REAL_LLM_TESTS") != "1",
+    reason="需要真实数据与真实检索/LLM环境（默认跳过）",
+)
+
 from src.interfaces.api.app import create_app
 from src.application.schemas.ingest import ChunkType, KBChunk
 from src.application.services.hybrid_search_service import HybridSearchService

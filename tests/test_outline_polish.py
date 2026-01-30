@@ -18,6 +18,11 @@ from uuid import uuid4
 
 import pytest
 
+pytestmark = pytest.mark.skipif(
+    os.getenv("LUMO_RUN_REAL_LLM_TESTS") != "1",
+    reason="需要真实 LLM 与中台配置（默认跳过）",
+)
+
 # 允许直接用 `python tests/test_outline_polish.py` 运行
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(_PROJECT_ROOT) not in sys.path:

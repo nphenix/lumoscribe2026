@@ -220,6 +220,10 @@ class WhitepaperGenerateRequest(BaseModel):
         default=None,
         description="是否先调用 LLM 润色大纲（保持结构/层级）。为空则使用服务端默认（可用 LUMO_T096_POLISH_OUTLINE 配置）。",
     )
+    polish_sections: bool | None = Field(
+        default=None,
+        description="是否在章节生成后进行语言润色（只做措辞与衔接优化，不新增外部事实）。为空则使用服务端默认（LUMO_WHITEPAPER_POLISH_SECTIONS）。",
+    )
 
     # 检索参数（hybrid + rerank）
     top_k: int | None = Field(
@@ -242,7 +246,7 @@ class WhitepaperGenerateRequest(BaseModel):
     )
 
 
-def _resolve_generation_defaults(req: WhitepaperGenerateRequest) -> tuple[bool, int, int]:
+def _resolve_generation_defaults(req: WhitepaperGenerateRequest) -> tuple[bool, bool, int, int]:
     """将请求参数与服务端默认值合并，降低前端集成成本。"""
     settings = get_settings()
     # 默认：尽量多召回，利于多文档覆盖；上限受 schema 约束 (<=100)
@@ -261,7 +265,12 @@ def _resolve_generation_defaults(req: WhitepaperGenerateRequest) -> tuple[bool, 
         if req.polish_outline is not None
         else bool(getattr(settings, "whitepaper_polish_outline", False))
     )
-    return polish_outline, top_k, rerank_top_n
+    polish_sections = (
+        req.polish_sections
+        if req.polish_sections is not None
+        else bool(getattr(settings, "whitepaper_polish_sections", False))
+    )
+    return polish_outline, polish_sections, top_k, rerank_top_n
 
 
 def _list_draft_md_files() -> list[Path]:
@@ -483,7 +492,7 @@ async def generate_whitepaper(
     req: WhitepaperGenerateRequest,
     db: Session = Depends(get_db),
 ):
-    polish_outline, top_k, rerank_top_n = _resolve_generation_defaults(req)
+    polish_outline, polish_sections, top_k, rerank_top_n = _resolve_generation_defaults(req)
     # 0) 解析 collection / outline（只在“唯一”时自动选择；否则返回候选列表，避免猜测）
     collection_name = await _resolve_collection_name(req, db)
     filename, outline_text = _resolve_outline(req)
@@ -597,6 +606,7 @@ async def generate_whitepaper(
             document_title=document_title,
             coverage_score_threshold=req.score_threshold,
             kb_input_root=kb_input_root,
+            polish_sections=polish_sections,
         )
 
         # 6) 落盘 HTML 并写入 target_files
@@ -676,7 +686,7 @@ async def generate_whitepaper_stream(
     req: WhitepaperGenerateRequest,
     db: Session = Depends(get_db),
 ):
-    polish_outline, top_k, rerank_top_n = _resolve_generation_defaults(req)
+    polish_outline, polish_sections, top_k, rerank_top_n = _resolve_generation_defaults(req)
     # 说明：此接口会输出 token 级别流式（LLM 生成阶段），并同时输出“进度/召回”事件便于观测。
     import asyncio
     from uuid import uuid4
@@ -809,6 +819,7 @@ async def generate_whitepaper_stream(
                 document_title=document_title,
                 coverage_score_threshold=req.score_threshold,
                 kb_input_root=kb_input_root,
+                polish_sections=polish_sections,
                 on_event=_push,
                 # token 级别流式：让 service 在 LLM 生成阶段推送 token 事件
                 stream_tokens=True,
@@ -971,12 +982,25 @@ def list_target_files(
 )
 def get_target_file(
     target_id: str,
+    db: Session = Depends(get_db),
     service: TargetFileService = Depends(get_target_file_service),
 ):
     """获取目标文件详情。"""
     target_file = service.get_target_file(target_id)
     if target_file is None:
         raise HTTPException(status_code=404, detail="目标文件不存在")
+
+    template_name = None
+    try:
+        from src.application.repositories.template_repository import TemplateRepository
+
+        template = TemplateRepository(db).get_by_id(target_file.template_id)
+        if template is not None:
+            template_name = template.original_filename
+    except Exception:
+        template_name = None
+
+    kb_name = (target_file.kb_id or "").strip() or None
 
     return TargetFileResponse(
         id=target_file.id,
@@ -989,8 +1013,8 @@ def get_target_file(
         description=target_file.description,
         created_at=target_file.created_at,
         updated_at=target_file.updated_at,
-        template_name=None,  # TODO: 关联查询模板名称
-        kb_name=None,  # TODO: 关联查询知识库名称
+        template_name=template_name,
+        kb_name=kb_name,
     )
 
 

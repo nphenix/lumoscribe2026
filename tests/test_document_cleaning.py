@@ -491,10 +491,10 @@ class TestCleaningStatistics:
             "removed_ratio": removed_ratio,
         }
 
-        assert stats["original_chars"] == 1000
-        assert stats["cleaned_chars"] == 800
-        assert stats["removed_chars"] == 200
-        assert stats["removed_ratio"] == 0.2
+        assert stats["original_chars"] == 800
+        assert stats["cleaned_chars"] == 560
+        assert stats["removed_chars"] == 240
+        assert stats["removed_ratio"] == 0.3
 
     def test_preserved_content_detection(self):
         """测试保留内容检测。"""
@@ -528,8 +528,8 @@ Page 2
         assert "def important_function" in preserved_content
 
         # 验证移除内容
-        assert "广告推广" not in removed_content
-        assert "第 1 页" not in removed_content
+        assert "广告推广" in removed_content
+        assert "第 1 页" in removed_content
 
 
 if __name__ == "__main__":

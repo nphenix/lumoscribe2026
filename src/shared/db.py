@@ -76,6 +76,11 @@ def _apply_lightweight_sqlite_migrations(engine) -> None:
         if "api_key" not in cols:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE llm_providers ADD COLUMN api_key TEXT"))
+        if "max_concurrency" not in cols:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("ALTER TABLE llm_providers ADD COLUMN max_concurrency INTEGER")
+                )
 
     # jobs.input_summary / result_summary
     if "jobs" in inspector.get_table_names():
@@ -85,3 +90,11 @@ def _apply_lightweight_sqlite_migrations(engine) -> None:
                 conn.execute(text("ALTER TABLE jobs ADD COLUMN input_summary JSON"))
             if "result_summary" not in cols:
                 conn.execute(text("ALTER TABLE jobs ADD COLUMN result_summary JSON"))
+
+    if "llm_call_sites" in inspector.get_table_names():
+        cols = {c["name"] for c in inspector.get_columns("llm_call_sites")}
+        if "max_concurrency" not in cols:
+            with engine.begin() as conn:
+                conn.execute(
+                    text("ALTER TABLE llm_call_sites ADD COLUMN max_concurrency INTEGER")
+                )

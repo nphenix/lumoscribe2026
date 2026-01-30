@@ -69,6 +69,7 @@ export default function ProvidersPage() {
     provider_type: 'openai_compatible',
     enabled: true,
   });
+  const [providerMaxConcurrency, setProviderMaxConcurrency] = useState<string>('');
   const [openaiConfig, setOpenaiConfig] = useState<{
     model: string;
     temperature: string;
@@ -122,6 +123,10 @@ export default function ProvidersPage() {
   const handleSubmit = async () => {
     try {
       let config: Record<string, any> | undefined = undefined;
+      const maxConcurrency =
+        providerMaxConcurrency.trim().length > 0
+          ? Number.parseInt(providerMaxConcurrency.trim(), 10)
+          : undefined;
       if (formData.provider_type === 'openai_compatible') {
         const next: Record<string, any> = {
           model: openaiConfig.model?.trim() || undefined,
@@ -189,6 +194,7 @@ export default function ProvidersPage() {
           api_key_env: formData.api_key_env || null,
           enabled: formData.enabled ?? true,
           config: config || null,
+          max_concurrency: maxConcurrency,
         };
         if (apiKeyTouched && (formData.api_key || '').trim().length > 0) {
           patch.api_key = formData.api_key;
@@ -201,6 +207,7 @@ export default function ProvidersPage() {
           // key 为空时让后端自动生成
           key: (formData.key || '').trim().length > 0 ? formData.key : undefined,
           config,
+          max_concurrency: maxConcurrency,
         };
         await createMutation.mutateAsync(payload);
         toast.success('供应商创建成功');
@@ -218,6 +225,7 @@ export default function ProvidersPage() {
         provider_type: 'openai_compatible',
         enabled: true,
       });
+      setProviderMaxConcurrency('');
       setOpenaiConfig({
         model: '',
         temperature: '0.2',
@@ -259,6 +267,7 @@ export default function ProvidersPage() {
       provider_type: 'openai_compatible',
       enabled: true,
     });
+    setProviderMaxConcurrency('');
     setOpenaiConfig({
       model: '',
       temperature: '0.2',
@@ -294,6 +303,7 @@ export default function ProvidersPage() {
       provider_type: p.provider_type || 'openai_compatible',
       enabled: p.enabled ?? true,
     });
+    setProviderMaxConcurrency(p.max_concurrency !== undefined && p.max_concurrency !== null ? String(p.max_concurrency) : '');
     const cfg = (p.config || {}) as any;
     setOpenaiConfig({
       model: cfg.model || '',
@@ -459,6 +469,18 @@ export default function ProvidersPage() {
                   placeholder="可选：例如 OPENAI_API_KEY"
                   value={formData.api_key_env || ''}
                   onChange={(e) => setFormData({ ...formData, api_key_env: e.target.value })}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="max_concurrency">并发上限</Label>
+                <Input
+                  id="max_concurrency"
+                  type="number"
+                  min="1"
+                  step="1"
+                  placeholder="可选：留空表示使用默认/不限制"
+                  value={providerMaxConcurrency}
+                  onChange={(e) => setProviderMaxConcurrency(e.target.value)}
                 />
               </div>
               <div className="flex items-center gap-2">
@@ -729,6 +751,7 @@ export default function ProvidersPage() {
                 <TableHead>名称</TableHead>
                 <TableHead>类型</TableHead>
                 <TableHead>Base URL</TableHead>
+                <TableHead>并发上限</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead className="text-right">操作</TableHead>
               </TableRow>
@@ -743,6 +766,11 @@ export default function ProvidersPage() {
                   </TableCell>
                   <TableCell>{provider.provider_type}</TableCell>
                   <TableCell className="text-gray-500">{provider.base_url}</TableCell>
+                  <TableCell className="text-gray-500">
+                    {provider.max_concurrency !== undefined && provider.max_concurrency !== null
+                      ? provider.max_concurrency
+                      : '—'}
+                  </TableCell>
                   <TableCell>
                     <span
                       className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
@@ -777,7 +805,7 @@ export default function ProvidersPage() {
               ))}
               {providers?.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center py-8 text-gray-500">
+                  <TableCell colSpan={7} className="text-center py-8 text-gray-500">
                     暂无配置。
                   </TableCell>
                 </TableRow>

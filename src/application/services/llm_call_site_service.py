@@ -60,6 +60,7 @@ class LLMCallSiteService:
         provider_id: str | None,
         config: dict | None,
         prompt_scope: str | None,
+        max_concurrency: int | None,
         enabled: bool,
         description: str | None,
     ) -> LLMCallSite:
@@ -99,6 +100,7 @@ class LLMCallSiteService:
             provider_id=provider_id,
             config_json=config_json,
             prompt_scope=prompt_scope,
+            max_concurrency=max_concurrency,
             enabled=enabled,
             description=description,
         )
@@ -111,6 +113,7 @@ class LLMCallSiteService:
         provider_id: str | None,
         config: dict | None,
         prompt_scope: str | None,
+        max_concurrency: int | None,
         enabled: bool | None,
         description: str | None,
     ) -> LLMCallSite | None:
@@ -134,6 +137,9 @@ class LLMCallSiteService:
 
         if prompt_scope is not None:
             target.prompt_scope = prompt_scope
+
+        if max_concurrency is not None:
+            target.max_concurrency = max_concurrency
 
         if enabled is not None:
             target.enabled = enabled

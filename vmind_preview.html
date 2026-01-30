@@ -1,0 +1,113 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>VMind 生成结果预览</title>
+    <!-- 使用指定版本的 VChart CDN -->
+    <script src="https://unpkg.com/@visactor/vchart@1.12.6/build/index.min.js"></script>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #f0f2f5; }
+        .chart-card { background: white; padding: 20px; margin-bottom: 20px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .chart-meta { margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+        .chart-container { width: 100%; height: 400px; }
+        h3 { margin: 0 0 5px 0; color: #333; }
+        p { margin: 0; color: #666; font-size: 0.9em; }
+        .error-log { color: red; background: #fff0f0; padding: 10px; margin-bottom: 10px; border: 1px solid #ffcccc; display: none; }
+    </style>
+</head>
+<body>
+    <h1>VMind 智能生成结果预览</h1>
+    <div id="global-error" class="error-log"></div>
+    <script>
+        window.onerror = function(msg, url, line, col, error) {
+            const el = document.getElementById('global-error');
+            el.style.display = 'block';
+            el.innerHTML += `<div>❌ [Global Error] ${msg} (Line ${line})</div>`;
+        };
+        // 检查 VChart 是否加载
+        window.onload = function() {
+            if (typeof VChart === 'undefined') {
+                const el = document.getElementById('global-error');
+                el.style.display = 'block';
+                el.innerHTML += "<div>❌ Critical Error: VChart library failed to load! Check your network or CDN URL.</div>";
+            }
+        }
+    </script>
+    
+    <div class="chart-card">
+        <div class="chart-meta">
+            <h3>文件: 1a7c4451c1043b2ee6a50d2ddb4b0672dde603b1b5bb46c32b9da467909d8d73.json</h3>
+            <p><strong>Prompt:</strong> 展示发电侧在削峰填谷、电力辅助、容量支撑、输电资产四个维度的价值流转流程，呈现各环节的作用及最终市场价值体现</p>
+        </div>
+        <div id="chart-0" class="chart-container"></div>
+        <script>
+            try {
+                const spec0 = {"type":"sankey","data":{"id":"data","values":[{"nodes":[{"name":"削峰填谷"},{"name":"存储超发电量"},{"name":"缓解调峰压力"},{"name":"错峰用电，节约电费"},{"name":"电力辅助"},{"name":"平滑出力波动"},{"name":"提升电网可靠性各电能质量"},{"name":"作为备用电源"},{"name":"容量支撑"},{"name":"提供可靠容量支撑"},{"name":"保证容量充裕性"},{"name":"减少用电尖峰负荷"},{"name":"输电资产"},{"name":"缓解电力阻塞，延缓输配电投资"},{"name":"能量市场反映分时价值"},{"name":"辅助服务市场反映可靠性价值"},{"name":"容量市场反映容量支撑价值"},{"name":"储能作为输电资产的价值"}],"links":[{"来源":0,"去向":1,"流量":1},{"来源":1,"去向":2,"流量":1},{"来源":2,"去向":3,"流量":1},{"来源":3,"去向":14,"流量":1},{"来源":4,"去向":5,"流量":1},{"来源":5,"去向":6,"流量":1},{"来源":6,"去向":7,"流量":1},{"来源":7,"去向":15,"流量":1},{"来源":8,"去向":9,"流量":1},{"来源":9,"去向":10,"流量":1},{"来源":10,"去向":11,"流量":1},{"来源":11,"去向":16,"流量":1},{"来源":12,"去向":13,"流量":1},{"来源":13,"去向":17,"流量":1}]}]},"color":["#1DD0F3","#2693FF","#3259F4","#1B0CA1","#CB2BC6","#FF581D","#FBBB16","#F6FB17","#73EC55"],"sourceField":"来源","targetField":"去向","valueField":"流量","categoryField":"name","label":{"visible":true}};
+                // 确保容器存在
+                if (document.getElementById('chart-0')) {
+                    // 兼容 VChart 默认导出
+                    const VChartClass = window.VChart ? (window.VChart.default || window.VChart) : null;
+                    if (!VChartClass) throw new Error('VChart class not found');
+                    
+                    const vchart0 = new VChartClass(spec0, { dom: 'chart-0' });
+                    vchart0.renderAsync();
+                }
+            } catch (err) {
+                document.getElementById('chart-0').innerHTML = '<div style="color:red">Render Error: ' + err.message + '</div>';
+                console.error('Render Error for chart-0:', err);
+            }
+        </script>
+    </div>
+    
+    <div class="chart-card">
+        <div class="chart-meta">
+            <h3>文件: 4c72cbb9b4a0b0acb7d3e0475ede2cc89b4eba9383f4e3728e42b3ecd337dbda.json</h3>
+            <p><strong>Prompt:</strong> 展示新型储能应急最大顶峰电力40万千瓦的不同时段各电力类型出力堆叠变化图</p>
+        </div>
+        <div id="chart-1" class="chart-container"></div>
+        <script>
+            try {
+                const spec1 = {"type":"bar","data":{"id":"data","values":[{"时间":"0:00","类型":"火电","数值":50},{"时间":"2:00","类型":"火电","数值":30},{"时间":"4:00","类型":"火电","数值":20},{"时间":"6:00","类型":"火电","数值":20},{"时间":"8:00","类型":"火电","数值":20},{"时间":"10:00","类型":"火电","数值":50},{"时间":"12:00","类型":"火电","数值":150},{"时间":"14:00","类型":"火电","数值":300},{"时间":"16:00","类型":"火电","数值":250},{"时间":"18:00","类型":"火电","数值":200},{"时间":"20:00","类型":"火电","数值":300},{"时间":"22:00","类型":"火电","数值":200},{"时间":"0:00","类型":"火电","数值":0},{"时间":"0:00","类型":"光伏+储能充电","数值":0},{"时间":"2:00","类型":"光伏+储能充电","数值":0},{"时间":"4:00","类型":"光伏+储能充电","数值":0},{"时间":"6:00","类型":"光伏+储能充电","数值":0},{"时间":"8:00","类型":"光伏+储能充电","数值":0},{"时间":"10:00","类型":"光伏+储能充电","数值":0},{"时间":"12:00","类型":"光伏+储能充电","数值":200},{"时间":"14:00","类型":"光伏+储能充电","数值":600},{"时间":"16:00","类型":"光伏+储能充电","数值":800},{"时间":"18:00","类型":"光伏+储能充电","数值":800},{"时间":"20:00","类型":"光伏+储能充电","数值":700},{"时间":"22:00","类型":"光伏+储能充电","数值":0},{"时间":"0:00","类型":"光伏+储能充电","数值":0},{"时间":"0:00","类型":"水电","数值":1200},{"时间":"2:00","类型":"水电","数值":1100},{"时间":"4:00","类型":"水电","数值":1000},{"时间":"6:00","类型":"水电","数值":1000},{"时间":"8:00","类型":"水电","数值":1100},{"时间":"10:00","类型":"水电","数值":1100},{"时间":"12:00","类型":"水电","数值":1100},{"时间":"14:00","类型":"水电","数值":500},{"时间":"16:00","类型":"水电","数值":100},{"时间":"18:00","类型":"水电","数值":0},{"时间":"20:00","类型":"水电","数值":600},{"时间":"22:00","类型":"水电","数值":700},{"时间":"0:00","类型":"水电","数值":1100},{"时间":"0:00","类型":"储能放电","数值":100},{"时间":"2:00","类型":"储能放电","数值":50},{"时间":"4:00","类型":"储能放电","数值":0},{"时间":"6:00","类型":"储能放电","数值":0},{"时间":"8:00","类型":"储能放电","数值":100},{"时间":"10:00","类型":"储能放电","数值":100},{"时间":"12:00","类型":"储能放电","数值":0},{"时间":"14:00","类型":"储能放电","数值":0},{"时间":"16:00","类型":"储能放电","数值":0},{"时间":"18:00","类型":"储能放电","数值":0},{"时间":"20:00","类型":"储能放电","数值":400},{"时间":"22:00","类型":"储能放电","数值":300},{"时间":"0:00","类型":"储能放电","数值":0}]},"xField":["时间","类型"],"yField":["数值"],"seriesField":"类型","color":[{"gradient":"linear","x0":0.01,"y0":0,"x1":0.01,"y1":1,"stops":[{"offset":0,"color":"#1DD0F3FF"},{"offset":1,"color":"#1DD0F300"}]},{"gradient":"linear","x0":0.01,"y0":0,"x1":0.01,"y1":1,"stops":[{"offset":0,"color":"#2693FFFF"},{"offset":1,"color":"#2693FF00"}]},{"gradient":"linear","x0":0.01,"y0":0,"x1":0.01,"y1":1,"stops":[{"offset":0,"color":"#3259F4FF"},{"offset":1,"color":"#3259F400"}]},{"gradient":"linear","x0":0.01,"y0":0,"x1":0.01,"y1":1,"stops":[{"offset":0,"color":"#1B0CA1FF"},{"offset":1,"color":"#1B0CA100"}]},{"gradient":"linear","x0":0.01,"y0":0,"x1":0.01,"y1":1,"stops":[{"offset":0,"color":"#CB2BC6FF"},{"offset":1,"color":"#CB2BC600"}]},{"gradient":"linear","x0":0.01,"y0":0,"x1":0.01,"y1":1,"stops":[{"offset":0,"color":"#FF581DFF"},{"offset":1,"color":"#FF581D00"}]},{"gradient":"linear","x0":0.01,"y0":0,"x1":0.01,"y1":1,"stops":[{"offset":0,"color":"#FBBB16FF"},{"offset":1,"color":"#FBBB1600"}]},{"gradient":"linear","x0":0.01,"y0":0,"x1":0.01,"y1":1,"stops":[{"offset":0,"color":"#F6FB17FF"},{"offset":1,"color":"#F6FB1700"}]},{"gradient":"linear","x0":0.01,"y0":0,"x1":0.01,"y1":1,"stops":[{"offset":0,"color":"#73EC55FF"},{"offset":1,"color":"#73EC5500"}]}],"axes":[{"orient":"bottom","type":"band","title":{"visible":false}},{"orient":"left","type":"linear","title":{"visible":false}}],"legends":[{"orient":"right","type":"discrete","item":{"visible":true}}]};
+                // 确保容器存在
+                if (document.getElementById('chart-1')) {
+                    // 兼容 VChart 默认导出
+                    const VChartClass = window.VChart ? (window.VChart.default || window.VChart) : null;
+                    if (!VChartClass) throw new Error('VChart class not found');
+                    
+                    const vchart1 = new VChartClass(spec1, { dom: 'chart-1' });
+                    vchart1.renderAsync();
+                }
+            } catch (err) {
+                document.getElementById('chart-1').innerHTML = '<div style="color:red">Render Error: ' + err.message + '</div>';
+                console.error('Render Error for chart-1:', err);
+            }
+        </script>
+    </div>
+    
+    <div class="chart-card">
+        <div class="chart-meta">
+            <h3>文件: ee68f2293a1739e7a49247ba7f52d366224ad64189a8fa126641a388e22d82f1.json</h3>
+            <p><strong>Prompt:</strong> 新疆新型储能政策汇总，包含20项相关政策文件及对应的发布时间</p>
+        </div>
+        <div id="chart-2" class="chart-container"></div>
+        <script>
+            try {
+                const spec2 = {"type":"bar","data":{"id":"data","values":[{"序号":"1","政策信息":"《2025年新疆政府工作报告》"},{"序号":"2","政策信息":"《新疆电力市场独立储能参与中长期交易实施细则（暂行）》2023.8"},{"序号":"3","政策信息":"《关于进一步完善我区分时电价有关事宜的通知》2023.7"},{"序号":"4","政策信息":"《关于组织上报2023年独立储能建设方案的通知》2023.7"},{"序号":"5","政策信息":"《喀什地区锂电新能源产业三年行动方案（2023-2025）》2023.5"},{"序号":"6","政策信息":"《光伏电站储能系统配置技术规范》2023.5"},{"序号":"7","政策信息":"《关于建立健全支持新型储能健康有序发展配套政策的通知》2023.5"},{"序号":"8","政策信息":"《关于加快推进新能源及关联产业协同发展的通知》2023.5"},{"序号":"9","政策信息":"《关于做好源网荷储一体化项目建设有关于工作的通知》2023.5"},{"序号":"10","政策信息":"《新疆电力辅助服务市场运营规则》2023.4"},{"序号":"11","政策信息":"《关于加快光伏产业全产业链高质量发展的实施意见》2023.2"},{"序号":"12","政策信息":"《莎车县生态环境保护“十四五”规划》2023.1"},{"序号":"13","政策信息":"《新疆中长期市场实施细则》2023.1"},{"序号":"14","政策信息":"《关于建立新能源开发管理工作机制的通知》2022.7"},{"序号":"15","政策信息":"《服务推进自治区大型风电光伏基地建设损伤指引（1.0版）》2022.3"},{"序号":"16","政策信息":"《新疆国民经济和社会发展第十四个五年规划和2035年远景目标纲要》2021"},{"序号":"17","政策信息":"《新疆电网发电侧储能管理暂行规则》2020.6"},{"序号":"18","政策信息":"《关于鼓励储能装备制造企业来疆投资建设发展储能产业的通知》2019.7"},{"序号":"19","政策信息":"《关于在全疆开展发电侧储能电站建设试点的通知》2019.2"},{"序号":"20","政策信息":"《关于扩大新能源消纳促进新能源持续健康发展的实施意见》2016.6"}]},"xField":"序号","yField":["政策信息"],"color":[{"gradient":"linear","x0":0.01,"y0":0,"x1":0.01,"y1":1,"stops":[{"offset":0,"color":"#1DD0F3FF"},{"offset":1,"color":"#1DD0F300"}]},{"gradient":"linear","x0":0.01,"y0":0,"x1":0.01,"y1":1,"stops":[{"offset":0,"color":"#2693FFFF"},{"offset":1,"color":"#2693FF00"}]},{"gradient":"linear","x0":0.01,"y0":0,"x1":0.01,"y1":1,"stops":[{"offset":0,"color":"#3259F4FF"},{"offset":1,"color":"#3259F400"}]},{"gradient":"linear","x0":0.01,"y0":0,"x1":0.01,"y1":1,"stops":[{"offset":0,"color":"#1B0CA1FF"},{"offset":1,"color":"#1B0CA100"}]},{"gradient":"linear","x0":0.01,"y0":0,"x1":0.01,"y1":1,"stops":[{"offset":0,"color":"#CB2BC6FF"},{"offset":1,"color":"#CB2BC600"}]},{"gradient":"linear","x0":0.01,"y0":0,"x1":0.01,"y1":1,"stops":[{"offset":0,"color":"#FF581DFF"},{"offset":1,"color":"#FF581D00"}]},{"gradient":"linear","x0":0.01,"y0":0,"x1":0.01,"y1":1,"stops":[{"offset":0,"color":"#FBBB16FF"},{"offset":1,"color":"#FBBB1600"}]},{"gradient":"linear","x0":0.01,"y0":0,"x1":0.01,"y1":1,"stops":[{"offset":0,"color":"#F6FB17FF"},{"offset":1,"color":"#F6FB1700"}]},{"gradient":"linear","x0":0.01,"y0":0,"x1":0.01,"y1":1,"stops":[{"offset":0,"color":"#73EC55FF"},{"offset":1,"color":"#73EC5500"}]}],"axes":[{"orient":"left","type":"band","title":{"visible":false}},{"orient":"bottom","type":"linear","title":{"visible":false}}],"direction":"horizontal"};
+                // 确保容器存在
+                if (document.getElementById('chart-2')) {
+                    // 兼容 VChart 默认导出
+                    const VChartClass = window.VChart ? (window.VChart.default || window.VChart) : null;
+                    if (!VChartClass) throw new Error('VChart class not found');
+                    
+                    const vchart2 = new VChartClass(spec2, { dom: 'chart-2' });
+                    vchart2.renderAsync();
+                }
+            } catch (err) {
+                document.getElementById('chart-2').innerHTML = '<div style="color:red">Render Error: ' + err.message + '</div>';
+                console.error('Render Error for chart-2:', err);
+            }
+        </script>
+    </div>
+    
+</body>
+</html>

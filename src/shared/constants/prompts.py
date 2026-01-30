@@ -15,6 +15,7 @@ from src.application.services.content_generation.prompts import (
 )
 from src.application.services.content_generation.prompts import (
     SCOPE_CONTENT_GENERATION_SECTION,
+    SCOPE_CONTENT_GENERATION_SECTION_POLISH,
     SCOPE_CONTENT_GENERATION_SECTION_STRUCTURED,
 )
 from src.application.services.outline_polish.prompts import (
@@ -30,6 +31,7 @@ __all__ = [
     "SCOPE_CHART_EXTRACTION",
     "SCOPE_CONTENT_GENERATION_SECTION",
     "SCOPE_CONTENT_GENERATION_SECTION_STRUCTURED",
+    "SCOPE_CONTENT_GENERATION_SECTION_POLISH",
     "SCOPE_OUTLINE_POLISH",
     "DEFAULT_PROMPTS",
 ]

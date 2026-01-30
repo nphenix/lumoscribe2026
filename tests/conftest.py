@@ -53,7 +53,7 @@ def pytest_configure(config) -> None:
 
 
 @pytest.fixture()
-def api_client(tmp_path: Path):
+async def api_client(tmp_path: Path):
     """全局 API 客户端 Fixture，为每个测试用例提供隔离的运行时环境（SQLite + Storage）。"""
     # 为测试隔离运行时目录与 sqlite 文件
     runtime_dir = tmp_path / "runtime"
@@ -65,6 +65,7 @@ def api_client(tmp_path: Path):
     os.environ["LUMO_SQLITE_PATH"] = str(sqlite_path)
     # 禁用加载 .env 文件，防止本地配置干扰测试
     os.environ["LUMO_DISABLE_DOTENV"] = "1"
+    os.environ["LUMO_API_MODE"] = "full"
     
     # 重置 settings 单例以应用新的环境变量
     reset_settings_for_tests()
@@ -73,10 +74,11 @@ def api_client(tmp_path: Path):
     _init_test_database(sqlite_path)
 
     from src.interfaces.api.app import create_app
-    from fastapi.testclient import TestClient
 
     app = create_app()
-    return TestClient(app)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
 
 
 def _init_test_database(sqlite_path: Path):

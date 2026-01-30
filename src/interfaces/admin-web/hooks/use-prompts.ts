@@ -19,11 +19,30 @@ export interface Prompt {
   updated_at: string;
 }
 
-export function usePrompts() {
+export interface PromptScopeSummary {
+  scope: string;
+  format: string | null;
+  latest_version: number;
+  active_version: number | null;
+  versions: number;
+  updated_at: string | null;
+}
+
+export function usePrompts(params?: { scope?: string; active?: boolean; format?: string }) {
   return useQuery<Prompt[]>({
-    queryKey: ['prompts'],
+    queryKey: ['prompts', params ?? null],
     queryFn: async () => {
-      const res = await api.get('/prompts');
+      const res = await api.get('/prompts', { params: { limit: 200, offset: 0, ...(params || {}) } });
+      return res.data.items || [];
+    },
+  });
+}
+
+export function usePromptScopes(params?: { scope?: string }) {
+  return useQuery<PromptScopeSummary[]>({
+    queryKey: ['prompt-scopes', params ?? null],
+    queryFn: async () => {
+      const res = await api.get('/prompts/scopes', { params: { limit: 500, offset: 0, ...(params || {}) } });
       return res.data.items || [];
     },
   });
@@ -43,12 +62,25 @@ export function usePrompt(id: string) {
 export function useUpdatePrompt() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (data: { id: string, content: string, is_active?: boolean }) => {
-      const res = await api.put(`/prompts/${data.id}`, data);
+    mutationFn: async (data: { id: string; active?: boolean; description?: string | null }) => {
+      const res = await api.patch(`/prompts/${data.id}`, {
+        active: data.active,
+        description: data.description,
+      });
       return res.data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['prompts'] });
+      queryClient.invalidateQueries({ queryKey: ['prompt-scopes'] });
+    },
+  });
+}
+
+export function usePromptDiff() {
+  return useMutation({
+    mutationFn: async (data: { from_id: string; to_id: string }) => {
+      const res = await api.get('/prompts/diff', { params: data });
+      return res.data as { from_id: string; to_id: string; scope: string | null; diff: string };
     },
   });
 }
@@ -71,6 +103,7 @@ export function useCreatePrompt() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['prompts'] });
+      queryClient.invalidateQueries({ queryKey: ['prompt-scopes'] });
     },
   });
 }

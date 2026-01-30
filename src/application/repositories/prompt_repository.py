@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from src.domain.entities.prompt import Prompt
@@ -53,6 +54,45 @@ class PromptRepository:
             .all()
         )
 
+    def list_scopes(
+        self,
+        *,
+        scope: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict]:
+        query = self.db.query(
+            Prompt.scope.label("scope"),
+            func.max(Prompt.version).label("latest_version"),
+            func.max(
+                case((Prompt.active.is_(True), Prompt.version), else_=None)
+            ).label("active_version"),
+            func.count(Prompt.id).label("versions"),
+            func.max(Prompt.updated_at).label("updated_at"),
+            func.max(Prompt.format).label("format"),
+        ).group_by(Prompt.scope)
+
+        if scope is not None:
+            query = query.filter(Prompt.scope.contains(scope))
+
+        rows = (
+            query.order_by(Prompt.scope.asc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        return [
+            {
+                "scope": r.scope,
+                "format": r.format,
+                "latest_version": r.latest_version,
+                "active_version": r.active_version,
+                "versions": r.versions,
+                "updated_at": r.updated_at,
+            }
+            for r in rows
+        ]
+
     def count(
         self,
         scope: str | None = None,
@@ -72,6 +112,12 @@ class PromptRepository:
             query = query.filter(Prompt.format == format)
 
         return query.count()
+
+    def count_scopes(self, *, scope: str | None = None) -> int:
+        query = self.db.query(func.count(func.distinct(Prompt.scope)))
+        if scope is not None:
+            query = query.filter(Prompt.scope.contains(scope))
+        return int(query.scalar() or 0)
 
     def update(self, prompt: Prompt) -> Prompt:
         """更新提示词。"""

@@ -165,6 +165,7 @@ def create_app() -> FastAPI:
 
     # 其余业务路由：仅 full 模式加载（避免 kb_* 独立服务被无关依赖阻塞）
     if api_mode == "full":
+        from src.interfaces.api.routes.antv_render import router as antv_render_router
         from src.interfaces.api.routes.chart_json import router as chart_json_router
         from src.interfaces.api.routes.generate import router as generate_router
         from src.interfaces.api.routes.intermediates import router as intermediates_router
@@ -177,6 +178,7 @@ def create_app() -> FastAPI:
         from src.interfaces.api.routes.targets import router as targets_router
         from src.interfaces.api.routes.templates import router as templates_router
 
+        app.include_router(antv_render_router, prefix="/v1")
         app.include_router(chart_json_router, prefix="/v1")
         app.include_router(generate_router, prefix="/v1")
         app.include_router(intermediates_router, prefix="/v1")

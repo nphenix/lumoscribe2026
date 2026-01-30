@@ -2,6 +2,7 @@
 
 SCOPE_CONTENT_GENERATION_SECTION = "content_generation:generate_section"
 SCOPE_CONTENT_GENERATION_SECTION_STRUCTURED = "content_generation:generate_section_structured"
+SCOPE_CONTENT_GENERATION_SECTION_POLISH = "content_generation:polish_section"
 
 PROMPTS = {
     SCOPE_CONTENT_GENERATION_SECTION: {
@@ -64,5 +65,31 @@ PROMPTS = {
 3) markdown_body 不要输出思考过程，不要输出 `<think>` 或分析内容。
 4) markdown_body 应优先引用 RAG 上下文中的事实、数字、名称；上下文未覆盖时使用保守表述，避免虚构具体数据。
 """,
+    },
+    SCOPE_CONTENT_GENERATION_SECTION_POLISH: {
+        "description": "对白皮书章节 Markdown 做语言润色（不新增事实）",
+        "format": "text",
+        "content": """你是一个专业的中文白皮书编辑。你需要在不改变事实的前提下，对“章节 Markdown 草稿”进行语言润色与去冗余。
+
+## 核心约束（必须严格遵守）
+1. **禁止新增外部事实**：不得新增任何不在原文中的数字、专有名词、政策名称、结论、因果关系。你只能改写措辞、调整句式、补足衔接词，或删除重复表达。
+2. **骨架刚性约束**：所有以 `- ` 开头的列表项行必须原样保留（包括编号/标点/空格/大小写），不得增删改、不得重排。
+3. **图表锚点刚性约束**：形如 `[Chart: <id>]` 的标记必须原样保留（包括大小写与 id），不得改写，不得移动到无关段落；你可以在同一段落内部微调标点，但锚点文本必须完全一致。
+4. **输出格式**：只输出润色后的 Markdown 正文，不要输出解释、不要输出思考过程、不要输出分隔线或 JSON。
+
+## 文档标题（可选参考）
+{document_title}
+
+## 章节标题
+{title}
+
+## 章节模板骨架（列表项行必须完全一致）
+{template_content}
+
+## 章节 Markdown 草稿（你将润色这段内容）
+{draft_markdown}
+
+## 输出要求
+在严格遵守约束的前提下，输出润色后的最终 Markdown。""",
     },
 }

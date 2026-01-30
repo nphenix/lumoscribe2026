@@ -71,6 +71,29 @@ class PromptListResponse(BaseModel):
     offset: int
 
 
+class PromptScopeSummary(BaseModel):
+    scope: str
+    format: str | None
+    latest_version: int
+    active_version: int | None
+    versions: int
+    updated_at: datetime | None
+
+
+class PromptScopeListResponse(BaseModel):
+    items: list[PromptScopeSummary]
+    total: int
+    limit: int
+    offset: int
+
+
+class PromptDiffResponse(BaseModel):
+    from_id: str
+    to_id: str
+    scope: str | None
+    diff: str
+
+
 class PromptDeleteResponse(BaseModel):
     """删除提示词响应。"""
 

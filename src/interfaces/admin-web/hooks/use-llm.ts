@@ -11,6 +11,7 @@ export interface LLMProvider {
   base_url?: string | null;
   api_key_env?: string | null;
   config?: Record<string, any> | null;
+  max_concurrency?: number | null;
   enabled: boolean;
   description?: string | null;
   created_at: string;
@@ -25,6 +26,7 @@ export interface LLMProviderCreate {
   api_key?: string | null;
   api_key_env?: string | null;
   config?: Record<string, any> | null;
+  max_concurrency?: number | null;
   enabled?: boolean;
   description?: string | null;
 }
@@ -37,6 +39,7 @@ export interface LLMProviderUpdate {
   api_key?: string | null;
   api_key_env?: string | null;
   config?: Record<string, any> | null;
+  max_concurrency?: number | null;
   enabled?: boolean | null;
   description?: string | null;
 }
@@ -144,6 +147,7 @@ export interface LLMCallSite {
   provider_id?: string | null;
   config?: Record<string, any> | null;
   prompt_scope?: string | null;
+  max_concurrency?: number | null;
   enabled: boolean;
   description?: string | null;
   created_at: string;
@@ -156,6 +160,7 @@ export interface LLMCallSiteCreate {
   provider_id?: string | null;
   config?: Record<string, any> | null;
   prompt_scope?: string | null;
+  max_concurrency?: number | null;
   enabled?: boolean;
   description?: string | null;
 }
@@ -164,6 +169,7 @@ export interface LLMCallSiteUpdate {
   provider_id?: string | null;
   config?: Record<string, any> | null;
   prompt_scope?: string | null;
+  max_concurrency?: number | null;
   enabled?: boolean;
   description?: string | null;
 }

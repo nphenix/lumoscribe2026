@@ -1,7 +1,16 @@
 'use client';
 
-import { useState } from 'react';
-import { usePrompts, useCreatePrompt, Prompt, PromptMessage } from '@/hooks/use-prompts';
+import { useMemo, useState } from 'react';
+import {
+  useCreatePrompt,
+  usePromptDiff,
+  usePromptScopes,
+  usePrompts,
+  useUpdatePrompt,
+  Prompt,
+  PromptMessage,
+  PromptScopeSummary,
+} from '@/hooks/use-prompts';
 import { Button } from '@/components/ui/button';
 import {
   Table,
@@ -24,15 +33,25 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Plus, MessageSquare, Edit } from 'lucide-react';
+import { Plus, MessageSquare, Edit, Diff, CheckCircle2, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 export default function PromptsPage() {
-  const { data: prompts, isLoading } = usePrompts();
+  const { data: scopes, isLoading: scopesLoading } = usePromptScopes();
+  const [selectedScope, setSelectedScope] = useState<PromptScopeSummary | null>(null);
+  const { data: scopePrompts, isLoading: scopePromptsLoading } = usePrompts(
+    selectedScope ? { scope: selectedScope.scope } : undefined
+  );
   const createMutation = useCreatePrompt();
+  const updateMutation = useUpdatePrompt();
+  const diffMutation = usePromptDiff();
   const [isOpen, setIsOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
+  const [scopeDialogOpen, setScopeDialogOpen] = useState(false);
+  const [diffFromId, setDiffFromId] = useState<string>('');
+  const [diffToId, setDiffToId] = useState<string>('');
+  const [diffText, setDiffText] = useState<string>('');
   const [formData, setFormData] = useState<Partial<Prompt>>({
     scope: '',
     format: 'text',
@@ -42,20 +61,12 @@ export default function PromptsPage() {
     description: '',
   });
 
-  const handleEdit = (prompt: Prompt) => {
-    // 转换消息为简单的字符串内容（如果是 Chat 模式，暂时只取第一条 User 消息用于编辑）
+  const openNewVersionFromPrompt = (prompt: Prompt) => {
     let content = prompt.content || '';
     if (prompt.format === 'chat' && prompt.messages && prompt.messages.length > 0) {
-        // 尝试找到 user message
-        const userMsg = prompt.messages.find(m => m.role === 'user');
-        if (userMsg) {
-            content = userMsg.content;
-        } else {
-            // fallback to JSON string if needed, or just first message
-            content = prompt.messages[0].content;
-        }
+      const userMsg = prompt.messages.find((m) => m.role === 'user');
+      content = userMsg ? userMsg.content : prompt.messages[0].content;
     }
-
     setFormData({
       scope: prompt.scope,
       format: prompt.format,
@@ -81,6 +92,18 @@ export default function PromptsPage() {
     setIsOpen(true);
   };
 
+  const openScope = (scope: PromptScopeSummary) => {
+    setSelectedScope(scope);
+    setScopeDialogOpen(true);
+    setDiffFromId('');
+    setDiffToId('');
+    setDiffText('');
+  };
+
+  const versions = useMemo(() => {
+    return (scopePrompts || []).slice().sort((a, b) => (b.version || 0) - (a.version || 0));
+  }, [scopePrompts]);
+
   const handleSubmit = async () => {
     try {
       if (!formData.scope) {
@@ -92,19 +115,14 @@ export default function PromptsPage() {
       let messages: PromptMessage[] = [];
       if (formData.format === 'chat') {
         if (typeof formData.content === 'string') {
-            // 构造标准 Chat 模板
-            messages = [
-                { role: 'system', content: 'You are a helpful assistant.' },
-                { role: 'user', content: formData.content }
-            ];
-            
-            // 如果原先有 messages，尝试保留 system prompt
-            if (formData.messages && formData.messages.length > 0) {
-                const sysMsg = formData.messages.find(m => m.role === 'system');
-                if (sysMsg) {
-                    messages[0] = sysMsg;
-                }
-            }
+          messages = [
+            { role: 'system', content: 'You are a helpful assistant.' },
+            { role: 'user', content: formData.content },
+          ];
+          if (formData.messages && formData.messages.length > 0) {
+            const sysMsg = formData.messages.find((m) => m.role === 'system');
+            if (sysMsg) messages[0] = sysMsg;
+          }
         }
       }
 
@@ -122,7 +140,29 @@ export default function PromptsPage() {
     }
   };
 
-  if (isLoading) return <div>加载中...</div>;
+  const compare = async () => {
+    if (!diffFromId || !diffToId) {
+      toast.error('请选择两个版本进行对比');
+      return;
+    }
+    try {
+      const res = await diffMutation.mutateAsync({ from_id: diffFromId, to_id: diffToId });
+      setDiffText(res.diff || '');
+    } catch (e) {
+      toast.error('对比失败');
+    }
+  };
+
+  const setActive = async (prompt: Prompt, active: boolean) => {
+    try {
+      await updateMutation.mutateAsync({ id: prompt.id, active });
+      toast.success(active ? '已启用该版本' : '已停用该版本');
+    } catch (e) {
+      toast.error('操作失败');
+    }
+  };
+
+  if (scopesLoading) return <div>加载中...</div>;
 
   return (
     <div className="space-y-6">
@@ -140,7 +180,7 @@ export default function PromptsPage() {
               <DialogTitle>{isEditing ? '编辑提示词 (发布新版本)' : '新建提示词'}</DialogTitle>
               <DialogDescription>
                 {isEditing 
-                    ? `正在为 ${formData.scope} 创建 v${(prompts?.find(p => p.scope === formData.scope)?.version || 0) + 1} 版本。`
+                    ? `正在为 ${formData.scope} 创建新版本。`
                     : '定义新的提示词模板。新版本将自动作为最新版本。'}
               </DialogDescription>
             </DialogHeader>
@@ -209,52 +249,201 @@ export default function PromptsPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>系统提示词</CardTitle>
+          <CardTitle>Scope 列表</CardTitle>
         </CardHeader>
         <CardContent>
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Scope</TableHead>
-                <TableHead>版本</TableHead>
                 <TableHead>格式</TableHead>
-                <TableHead>说明</TableHead>
-                <TableHead>状态</TableHead>
+                <TableHead>启用版本</TableHead>
+                <TableHead>最新版本</TableHead>
+                <TableHead>版本数</TableHead>
                 <TableHead className="text-right">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {prompts?.map((prompt) => (
-                <TableRow key={prompt.id}>
+              {(scopes || []).map((s) => (
+                <TableRow key={s.scope}>
                   <TableCell className="font-medium flex items-center">
                     <MessageSquare className="mr-2 h-4 w-4 text-purple-500" />
-                    {prompt.scope}
-                  </TableCell>
-                  <TableCell>v{prompt.version}</TableCell>
-                  <TableCell>
-                    <Badge variant="outline">{prompt.format}</Badge>
-                  </TableCell>
-                  <TableCell className="text-gray-500">
-                    {prompt.description || '-'}
+                    {s.scope}
                   </TableCell>
                   <TableCell>
-                    {prompt.active ? (
-                      <Badge className="bg-green-500 hover:bg-green-600">启用</Badge>
-                    ) : (
-                      <Badge variant="secondary">停用</Badge>
-                    )}
+                    <Badge variant="outline">{s.format || '—'}</Badge>
                   </TableCell>
+                  <TableCell>{s.active_version ? `v${s.active_version}` : '—'}</TableCell>
+                  <TableCell>{`v${s.latest_version}`}</TableCell>
+                  <TableCell>{s.versions}</TableCell>
                   <TableCell className="text-right">
-                    <Button variant="ghost" size="sm" onClick={() => handleEdit(prompt)}>
-                      <Edit className="h-4 w-4" />
+                    <Button variant="ghost" size="sm" onClick={() => openScope(s)}>
+                      查看
                     </Button>
                   </TableCell>
                 </TableRow>
               ))}
+              {(scopes || []).length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={6} className="text-center py-8 text-gray-500">
+                    暂无提示词。
+                  </TableCell>
+                </TableRow>
+              )}
             </TableBody>
           </Table>
         </CardContent>
       </Card>
+
+      <Dialog open={scopeDialogOpen} onOpenChange={setScopeDialogOpen}>
+        <DialogContent className="sm:max-w-[1100px]" onInteractOutside={(e) => e.preventDefault()}>
+          <DialogHeader>
+            <DialogTitle>Scope：{selectedScope?.scope}</DialogTitle>
+            <DialogDescription>版本列表、启停与差异对比</DialogDescription>
+          </DialogHeader>
+
+          {scopePromptsLoading ? (
+            <div>加载中...</div>
+          ) : (
+            <div className="grid gap-6">
+              <div className="flex justify-between items-center">
+                <div className="text-sm text-gray-600">
+                  {selectedScope?.active_version ? `当前启用 v${selectedScope.active_version}` : '当前无启用版本'}
+                </div>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    const latest = versions[0];
+                    if (!latest) {
+                      toast.error('该 scope 暂无版本');
+                      return;
+                    }
+                    openNewVersionFromPrompt(latest);
+                  }}
+                >
+                  <Edit className="mr-2 h-4 w-4" />
+                  发布新版本
+                </Button>
+              </div>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>版本列表</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>版本</TableHead>
+                        <TableHead>状态</TableHead>
+                        <TableHead>说明</TableHead>
+                        <TableHead>更新时间</TableHead>
+                        <TableHead className="text-right">操作</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {versions.map((p) => (
+                        <TableRow key={p.id}>
+                          <TableCell>{`v${p.version}`}</TableCell>
+                          <TableCell>
+                            {p.active ? (
+                              <Badge className="bg-green-500 hover:bg-green-600">启用</Badge>
+                            ) : (
+                              <Badge variant="secondary">停用</Badge>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-gray-600">{p.description || '—'}</TableCell>
+                          <TableCell className="text-gray-600">
+                            {p.updated_at ? String(p.updated_at) : '—'}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <Button variant="ghost" size="sm" onClick={() => openNewVersionFromPrompt(p)}>
+                              <Edit className="mr-2 h-4 w-4" />
+                              基于此版本发布
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setActive(p, true)}
+                              disabled={updateMutation.isPending}
+                            >
+                              <CheckCircle2 className="mr-2 h-4 w-4" />
+                              启用
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setActive(p, false)}
+                              disabled={updateMutation.isPending}
+                            >
+                              <XCircle className="mr-2 h-4 w-4" />
+                              停用
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                      {versions.length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={5} className="text-center py-8 text-gray-500">
+                            暂无版本。
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>差异对比</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                    <div className="grid gap-2">
+                      <Label>版本 A</Label>
+                      <Select value={diffFromId} onValueChange={setDiffFromId}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="选择版本" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {versions.map((p) => (
+                            <SelectItem key={p.id} value={p.id}>
+                              {`v${p.version}`}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="grid gap-2">
+                      <Label>版本 B</Label>
+                      <Select value={diffToId} onValueChange={setDiffToId}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="选择版本" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {versions.map((p) => (
+                            <SelectItem key={p.id} value={p.id}>
+                              {`v${p.version}`}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex items-end">
+                      <Button onClick={compare} disabled={diffMutation.isPending}>
+                        <Diff className="mr-2 h-4 w-4" />
+                        {diffMutation.isPending ? '对比中...' : '对比'}
+                      </Button>
+                    </div>
+                  </div>
+                  <Textarea className="min-h-[260px] font-mono" value={diffText} readOnly />
+                </CardContent>
+              </Card>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

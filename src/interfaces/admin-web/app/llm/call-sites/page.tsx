@@ -46,12 +46,16 @@ export default function CallSitesPage() {
   const [patchProviderId, setPatchProviderId] = useState<string>('');
   const [patchEnabled, setPatchEnabled] = useState<boolean>(true);
   const [patchDescription, setPatchDescription] = useState<string>('');
+  const [patchMaxConcurrency, setPatchMaxConcurrency] = useState<string>('');
 
   const openEditor = (cs: LLMCallSite) => {
     setSelected(cs);
     setPatchProviderId(cs.provider_id || '');
     setPatchEnabled(cs.enabled);
     setPatchDescription(cs.description || '');
+    setPatchMaxConcurrency(
+      cs.max_concurrency !== undefined && cs.max_concurrency !== null ? String(cs.max_concurrency) : ''
+    );
   };
 
   const closeEditor = () => {
@@ -61,12 +65,17 @@ export default function CallSitesPage() {
   const handleSave = async () => {
     if (!selected) return;
     try {
+      const maxConcurrency =
+        patchMaxConcurrency.trim().length > 0
+          ? Number.parseInt(patchMaxConcurrency.trim(), 10)
+          : undefined;
       await updateMutation.mutateAsync({
         id: selected.id,
         patch: {
           provider_id: patchProviderId || null,
           enabled: patchEnabled,
           description: patchDescription || null,
+          max_concurrency: maxConcurrency,
           // 注意：config_json 和 prompt_scope 字段已从界面移除
           // 如需配置可通过 API 直接调用，或后续添加高级选项界面
         },
@@ -103,6 +112,7 @@ export default function CallSitesPage() {
                 <TableHead>说明</TableHead>
                 <TableHead>期望类型</TableHead>
                 <TableHead>绑定 Provider</TableHead>
+                <TableHead>并发上限</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead className="text-right">操作</TableHead>
               </TableRow>
@@ -117,6 +127,11 @@ export default function CallSitesPage() {
                   <TableCell>{cs.expected_model_kind}</TableCell>
                   <TableCell className="text-gray-600">
                     {cs.provider_id ? providerNameById.get(cs.provider_id) || cs.provider_id : '未绑定'}
+                  </TableCell>
+                  <TableCell className="text-gray-600">
+                    {cs.max_concurrency !== undefined && cs.max_concurrency !== null
+                      ? cs.max_concurrency
+                      : '—'}
                   </TableCell>
                   <TableCell>
                     <span
@@ -144,7 +159,7 @@ export default function CallSitesPage() {
 
               {callSites?.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center py-8 text-gray-500">
+                  <TableCell colSpan={7} className="text-center py-8 text-gray-500">
                     暂无调用点。请先运行 seed 或初始化脚本注册调用点。
                   </TableCell>
                 </TableRow>
@@ -199,6 +214,18 @@ export default function CallSitesPage() {
                     id="description"
                     value={patchDescription}
                     onChange={(e) => setPatchDescription(e.target.value)}
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="max_concurrency">并发上限</Label>
+                  <Input
+                    id="max_concurrency"
+                    type="number"
+                    min="1"
+                    step="1"
+                    placeholder="可选：留空表示继承 Provider"
+                    value={patchMaxConcurrency}
+                    onChange={(e) => setPatchMaxConcurrency(e.target.value)}
                   />
                 </div>
                 <div className="flex items-center gap-2 pt-7">

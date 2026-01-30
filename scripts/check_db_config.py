@@ -1,62 +1,42 @@
-
 import sqlite3
-import json
-from pathlib import Path
+import os
 
-# Use absolute path or relative to CWD
-db_path = Path("f:/lumoscribe2026/.runtime/sqlite/lumoscribe.db")
+db_path = r'F:\lumoscribe2026\.runtime\sqlite\lumoscribe.db'
 
-if not db_path.exists():
+if not os.path.exists(db_path):
     print(f"Database not found at {db_path}")
     exit(1)
 
 conn = sqlite3.connect(db_path)
-conn.row_factory = sqlite3.Row
 cursor = conn.cursor()
 
-def print_table_config(table_name):
-    print(f"\n--- Checking {table_name} ---")
-    try:
-        cursor.execute(f"SELECT * FROM {table_name}")
-        rows = cursor.fetchall()
-        if not rows:
-            print(f"No records found in {table_name}")
-            return
+# List tables
+cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+tables = cursor.fetchall()
+print("Tables:", [t[0] for t in tables])
 
-        for row in rows:
-            print(f"ID: {row['id']}")
-            if 'name' in row.keys():
-                print(f"Name: {row['name']}")
-            if 'key' in row.keys():
-                print(f"Key: {row['key']}")
-            
-            # Safe access for row columns
-            config_json = row['config_json'] if 'config_json' in row.keys() else None
-            
-            if config_json:
-                try:
-                    config = json.loads(config_json)
-                    print(f"Config: {json.dumps(config, indent=2, ensure_ascii=False)}")
-                    
-                    # Check for streaming keys
-                    stream_keys = ['stream', 'streaming']
-                    found_stream = {k: config.get(k) for k in stream_keys if k in config}
-                    if found_stream:
-                        print(f"Found streaming config: {found_stream}")
-                    else:
-                        print("No explicit streaming config found.")
-                except json.JSONDecodeError:
-                    print(f"Invalid JSON in config_json: {config_json}")
-            else:
-                print("No config_json")
-            print("-" * 20)
-    except sqlite3.OperationalError as e:
-        print(f"Error querying {table_name}: {e}")
+# Check llm_models or llm_providers
+# Assuming there is a table for models or providers
+try:
+    cursor.execute("SELECT * FROM llm_models")
+    columns = [description[0] for description in cursor.description]
+    print("\nColumns in llm_models:", columns)
+    rows = cursor.fetchall()
+    print("\nRows in llm_models:")
+    for row in rows:
+        print(row)
+except Exception as e:
+    print(f"Error querying llm_models: {e}")
 
-# Check Providers
-print_table_config("llm_providers")
-
-# Check Call Sites
-print_table_config("llm_call_sites")
+try:
+    cursor.execute("SELECT * FROM llm_providers")
+    columns = [description[0] for description in cursor.description]
+    print("\nColumns in llm_providers:", columns)
+    rows = cursor.fetchall()
+    print("\nRows in llm_providers:")
+    for row in rows:
+        print(row)
+except Exception as e:
+    print(f"Error querying llm_providers: {e}")
 
 conn.close()

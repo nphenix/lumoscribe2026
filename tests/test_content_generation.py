@@ -21,6 +21,11 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+pytestmark = pytest.mark.skipif(
+    os.getenv("LUMO_RUN_REAL_LLM_TESTS") != "1",
+    reason="需要真实数据与真实 LLM 环境（默认跳过）",
+)
+
 # 允许直接用 `python tests/test_content_generation.py` 运行（不依赖 pytest 自动注入 PYTHONPATH）
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(_PROJECT_ROOT) not in sys.path:

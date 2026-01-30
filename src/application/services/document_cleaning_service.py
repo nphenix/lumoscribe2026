@@ -151,7 +151,7 @@ class DocumentCleaningService:
             final_stats = self._merge_stats(rule_stats, final_stats)
 
             # 保存产物
-            output_path = self._save_artifact(
+            output_path = self._save_cleaned_doc_artifact(
                 source_file_id=source_file_id,
                 stats=final_stats,
             )
@@ -166,7 +166,7 @@ class DocumentCleaningService:
             )
 
             # 写入文件
-            self._write_artifact_file(output_path, artifact, mineru_output_dir)
+            self._write_cleaned_doc_artifact_file(output_path, artifact, mineru_output_dir)
 
             logger.info(
                 f"文档清洗完成 source_file_id={source_file_id}, "
@@ -244,7 +244,7 @@ class DocumentCleaningService:
         final_stats = self._merge_stats(rule_stats, final_stats)
 
         # 保存产物（与 clean_document 一致）
-        output_path = self._save_artifact(
+        output_path = self._save_cleaned_doc_artifact(
             source_file_id=source_file_id,
             stats=final_stats,
         )
@@ -255,7 +255,7 @@ class DocumentCleaningService:
             cleaning_stats=final_stats,
             output_path=output_path,
         )
-        self._write_artifact_file(output_path, artifact, mineru_output_dir)
+        self._write_cleaned_doc_artifact_file(output_path, artifact, mineru_output_dir)
 
         yield {"type": "stage", "stage": "llm_clean_done"}
 
@@ -485,7 +485,12 @@ class DocumentCleaningService:
         }
 
         max_len = 8192
-        concurrency_limit = 1
+        try:
+            resolved = self.llm_runtime.resolve_effective_concurrency(SCOPE_DOC_CLEANING)
+            concurrency_limit = int(resolved.get("effective") or 1)
+        except Exception:
+            concurrency_limit = 1
+        concurrency_limit = max(1, concurrency_limit)
         final_parts: list[str] = [""] * len(segments)
 
         queue: asyncio.Queue = asyncio.Queue()
@@ -723,14 +728,14 @@ class DocumentCleaningService:
             # 使用流式传输聚合结果（内部聚合），确保对外 clean_document() 语义稳定
             cleaned_chunks: list[str] = []
             chunk_count = 0
-            async for chunk in chain.astream({"input": prompt_text}):
-                if chunk:
-                    chunk_str = str(chunk)
-                    cleaned_chunks.append(chunk_str)
-                    chunk_count += 1
-                    # 每收到 10 个 chunk 打印一次日志，避免刷屏
-                    if chunk_count % 10 == 0:
-                        logger.info(f"清洗进度：已接收 {chunk_count} 个片段")
+            async with self.llm_runtime.acquire_llm_slot(SCOPE_DOC_CLEANING):
+                async for chunk in chain.astream({"input": prompt_text}):
+                    if chunk:
+                        chunk_str = str(chunk)
+                        cleaned_chunks.append(chunk_str)
+                        chunk_count += 1
+                        if chunk_count % 10 == 0:
+                            logger.info(f"清洗进度：已接收 {chunk_count} 个片段")
             
             logger.info(f"文本段清洗完成（片段数：{chunk_count}）")
             cleaned = "".join(cleaned_chunks)
@@ -782,11 +787,12 @@ class DocumentCleaningService:
                 yield {"type": "delta", "text": prefix}
 
             core_chunks: list[str] = []
-            async for chunk in chain.astream({"input": prompt_text}):
-                if chunk:
-                    s = str(chunk)
-                    core_chunks.append(s)
-                    yield {"type": "delta", "text": s}
+            async with self.llm_runtime.acquire_llm_slot(SCOPE_DOC_CLEANING):
+                async for chunk in chain.astream({"input": prompt_text}):
+                    if chunk:
+                        s = str(chunk)
+                        core_chunks.append(s)
+                        yield {"type": "delta", "text": s}
 
             if suffix:
                 yield {"type": "delta", "text": suffix}
@@ -902,7 +908,7 @@ class DocumentCleaningService:
             + llm_stats.duplicates_removed,
         )
 
-    def _save_artifact(
+    def _save_cleaned_doc_artifact(
         self,
         source_file_id: str,
         stats: CleaningStats,
@@ -923,9 +929,19 @@ class DocumentCleaningService:
         # 所以是 intermediates/{source_file_id}/cleaned_doc/{artifact_id}.json
         relative_path = f"intermediates/{source_file_id}/cleaned_doc/{artifact_id}.json"
 
+        workspace_id = "default"
+        try:
+            from src.application.repositories.source_file_repository import SourceFileRepository
+
+            sf = SourceFileRepository(self.artifact_repository.db).get_by_id(str(source_file_id))
+            if sf is not None and str(sf.workspace_id or "").strip():
+                workspace_id = str(sf.workspace_id)
+        except Exception:
+            pass
+
         artifact = IntermediateArtifact(
             id=artifact_id,
-            workspace_id="default",  # TODO: 从上下文获取
+            workspace_id=workspace_id,
             source_id=str(source_file_id),
             type=IntermediateType.CLEANED_DOC,
             storage_path=relative_path,
@@ -1029,7 +1045,7 @@ class DocumentCleaningService:
 
         return False
 
-    def _write_artifact_file(
+    def _write_cleaned_doc_artifact_file(
         self,
         output_path: str,
         artifact: CleanedDocumentArtifact,
@@ -1118,7 +1134,7 @@ class ChartExtractionService:
     async def extract_charts(
         self,
         mineru_output: dict[str, Any],
-        source_file_id: int,
+        source_file_id: str,
     ) -> ChartExtractionResult:
         """提取图表并转换为 JSON。
 
@@ -1154,7 +1170,7 @@ class ChartExtractionService:
                     json_charts.append(chart_json)
 
             # 保存产物
-            output_path = self._save_artifact(
+            output_path = self._save_chart_json_artifact(
                 source_file_id=source_file_id,
                 charts=json_charts,
             )
@@ -1165,7 +1181,7 @@ class ChartExtractionService:
                 charts=json_charts,
                 output_path=output_path,
             )
-            self._write_artifact_file(output_path, artifact)
+            self._write_chart_json_artifact_file(output_path, artifact)
 
             logger.info(
                 f"图表提取完成 source_file_id={source_file_id}, "
@@ -1187,7 +1203,7 @@ class ChartExtractionService:
             )
 
     async def _extract_from_mineru(
-        self, mineru_output: dict[str, Any], source_file_id: int
+        self, mineru_output: dict[str, Any], source_file_id: str
     ) -> list[dict[str, Any]]:
         """从 MinerU 输出中提取图表信息。"""
         charts = []
@@ -1510,7 +1526,10 @@ class ChartExtractionService:
 
             try:
                 import asyncio as _asyncio
-                result = await _asyncio.wait_for(llm.ainvoke([message]), timeout=float(timeout_seconds or 60))
+                async with self.llm_runtime.acquire_llm_slot(SCOPE_CHART_EXTRACTION):
+                    result = await _asyncio.wait_for(
+                        llm.ainvoke([message]), timeout=float(timeout_seconds or 60)
+                    )
             except _asyncio.TimeoutError as exc:
                 raise RuntimeError(
                     f"多模态 LLM 调用超时: model={type(llm).__name__}, image={chart_image_path}, timeout={timeout_seconds or 60}s"
@@ -1547,7 +1566,7 @@ class ChartExtractionService:
                 chart_type=ChartType(chart_type) if chart_type in [e.value for e in ChartType] else ChartType.OTHER,
                 json_content=json_content,
                 source_image_path=chart_image_path,
-                confidence=0.9,  # TODO: 从模型响应中获取置信度
+                confidence=0.9,
                 page_number=None,
             )
 
@@ -1684,9 +1703,9 @@ class ChartExtractionService:
                 pass
         return None
 
-    def _save_artifact(
+    def _save_chart_json_artifact(
         self,
-        source_file_id: int,
+        source_file_id: str,
         charts: list[ChartData],
     ) -> str:
         """保存中间产物到数据库。
@@ -1705,9 +1724,19 @@ class ChartExtractionService:
         relative_path = f"intermediates/{source_file_id}/pic_to_json/chart_json/{artifact_id}.json"
 
         # 保存到数据库
+        workspace_id = "default"
+        try:
+            from src.application.repositories.source_file_repository import SourceFileRepository
+
+            sf = SourceFileRepository(self.artifact_repository.db).get_by_id(str(source_file_id))
+            if sf is not None and str(sf.workspace_id or "").strip():
+                workspace_id = str(sf.workspace_id)
+        except Exception:
+            pass
+
         artifact = IntermediateArtifact(
             id=artifact_id,
-            workspace_id="default",  # TODO: 从上下文获取
+            workspace_id=workspace_id,
             source_id=str(source_file_id),
             type=IntermediateType.CHART_JSON,
             storage_path=relative_path,
@@ -1721,7 +1750,7 @@ class ChartExtractionService:
 
         return relative_path
 
-    def _write_artifact_file(
+    def _write_chart_json_artifact_file(
         self, output_path: str, artifact: ChartJSONArtifact
     ) -> None:
         """写入产物文件。"""

@@ -188,6 +188,7 @@ async def create_generate_task(
             kb_input_root=kb_root,
             max_auto_charts_per_section=req.max_auto_charts_per_section,
             stream_tokens=req.stream_tokens,
+            polish_sections=req.polish_sections,
         )
 
         # 更新任务状态

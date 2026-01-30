@@ -29,7 +29,6 @@ export function useUploadSource() {
     mutationFn: async (file: File) => {
       const formData = new FormData();
       formData.append('file', file);
-      // TODO: Support dynamic workspace selection
       formData.append('workspace_id', 'default');
       const res = await api.post('/sources', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
